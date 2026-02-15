@@ -574,6 +574,50 @@
         .vs-controls-hint div { text-align: left; line-height: 1.6; }
         .vs-controls-hint .hint-label { color: rgba(255,255,255,0.7); font-weight: 700; margin-bottom: 2px; }
 
+        /* ===== Online Mode ===== */
+        .online-btn { background: linear-gradient(135deg, #00c853, #00b0ff) !important; }
+        .online-btn.active { box-shadow: 0 0 15px rgba(0,200,83,0.5) !important; }
+
+        .online-choice { display: flex; flex-direction: column; align-items: center; gap: 8px; margin: 10px 0; }
+        .online-or { color: rgba(255,255,255,0.4); font-size: 12px; }
+        .online-join-group { display: flex; gap: 6px; align-items: center; }
+        .online-join-group input {
+            background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.2);
+            color: #fff; padding: 8px 12px; border-radius: 6px; font-family: 'Orbitron', monospace;
+            width: 140px; outline: none;
+        }
+        .online-join-group input:focus { border-color: var(--neon-cyan); }
+        .online-join-btn { font-size: 11px !important; padding: 8px 16px !important; }
+        .online-create-btn { font-size: 13px !important; }
+
+        .online-status {
+            color: rgba(255,255,255,0.6); font-size: 12px; text-align: center;
+            min-height: 20px; margin: 5px 0;
+        }
+        .online-status.error { color: #ff0044; }
+        .online-status.success { color: #00ff6a; }
+
+        .online-room-display {
+            background: rgba(0,240,255,0.05); border: 1px solid rgba(0,240,255,0.2);
+            border-radius: 10px; padding: 15px; text-align: center; margin: 10px 0;
+        }
+        .online-room-label { font-size: 11px; color: rgba(255,255,255,0.5); margin-bottom: 5px; }
+        .online-room-code {
+            font-family: 'Orbitron', monospace; font-size: 28px; font-weight: 900;
+            color: #00f0ff; letter-spacing: 5px;
+            text-shadow: 0 0 15px rgba(0,240,255,0.5);
+            cursor: pointer; user-select: all;
+        }
+        .online-room-hint { font-size: 10px; color: rgba(255,255,255,0.4); margin-top: 5px; }
+        .online-waiting {
+            font-size: 12px; color: #ffe600; margin-top: 8px;
+            animation: onlinePulse 1.5s ease-in-out infinite;
+        }
+        @keyframes onlinePulse {
+            0%, 100% { opacity: 0.5; }
+            50% { opacity: 1; }
+        }
+
         /* Confetti canvas */
         #confetti-canvas {
             position: absolute;
@@ -976,6 +1020,7 @@
                     <button class="mode-btn" data-mode="sprint">Sprint</button>
                     <button class="mode-btn" data-mode="ultra">Ultra</button>
                     <button class="mode-btn vs-btn" data-mode="vs">1v1</button>
+                    <button class="mode-btn online-btn" data-mode="online">Online</button>
                 </div>
                 <div class="mode-desc" id="mode-desc">Endloser Modus - Spiele bis zum Ende!</div>
 
@@ -1001,6 +1046,25 @@
                         <kbd>Shift</kbd> Hold &bull; <kbd>/</kbd> 180&deg;
                     </div>
                 </div>
+                <!-- Online lobby (visible when Online mode selected) -->
+                <div id="online-lobby" class="online-only" style="display:none">
+                    <div class="online-choice">
+                        <button class="start-btn online-create-btn" id="online-create-btn">RAUM ERSTELLEN</button>
+                        <div class="online-or">oder</div>
+                        <div class="online-join-group">
+                            <input type="text" id="room-code-input" maxlength="8" placeholder="Code eingeben..." autocomplete="off" spellcheck="false" style="text-transform:uppercase;text-align:center;letter-spacing:3px;font-size:16px;">
+                            <button class="start-btn online-join-btn" id="online-join-btn">BEITRETEN</button>
+                        </div>
+                    </div>
+                    <div id="online-status" class="online-status"></div>
+                    <div id="online-room-display" class="online-room-display" style="display:none">
+                        <div class="online-room-label">Dein Raum-Code:</div>
+                        <div class="online-room-code" id="online-room-code"></div>
+                        <div class="online-room-hint">Teile diesen Code mit deinem Gegner!</div>
+                        <div class="online-waiting">Warte auf Gegner...</div>
+                    </div>
+                </div>
+
                 <button class="start-btn" id="start-btn">START</button>
             </div>
 
@@ -1109,6 +1173,7 @@
         </div>
     </div>
 
+    <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
     <script src="game.js"></script>
 </body>
 </html>
