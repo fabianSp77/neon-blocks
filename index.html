@@ -525,6 +525,55 @@
             100% { opacity: 0; transform: translateY(-70px) scale(1.4); }
         }
 
+        @keyframes achievementIn {
+            0% { opacity: 0; transform: translateY(-30px) scale(0.8); }
+            60% { opacity: 1; transform: translateY(5px) scale(1.02); }
+            100% { opacity: 1; transform: translateY(0) scale(1); }
+        }
+
+        /* ===== VS Mode ===== */
+        .vs-btn { background: linear-gradient(135deg, #ff0044, #ff6a00) !important; }
+        .vs-btn.active { box-shadow: 0 0 15px rgba(255,0,68,0.5) !important; }
+
+        #vs-hud {
+            position: absolute;
+            top: -36px; left: 0; right: 0;
+            display: flex; justify-content: center; align-items: center;
+            gap: 10px; z-index: 30;
+            font-family: 'Orbitron', monospace;
+        }
+        .vs-player-hud {
+            display: flex; align-items: center; gap: 8px;
+            padding: 4px 12px; border-radius: 6px;
+            background: rgba(0,0,0,0.6); border: 1px solid rgba(255,255,255,0.1);
+        }
+        .vs-p1 { border-color: rgba(0,240,255,0.4); }
+        .vs-p2 { border-color: rgba(255,0,170,0.4); }
+        .vs-name { font-size: 11px; font-weight: 700; letter-spacing: 1px; }
+        .vs-p1 .vs-name { color: #00f0ff; }
+        .vs-p2 .vs-name { color: #ff00aa; }
+        .vs-score { font-size: 13px; color: #ffe600; font-weight: 700; }
+        .vs-lines { font-size: 10px; color: rgba(255,255,255,0.5); }
+        .vs-divider {
+            font-size: 16px; font-weight: 900; color: #ff0044;
+            text-shadow: 0 0 10px #ff0044;
+        }
+        .vs-attack {
+            font-size: 12px; color: #ff6a00; font-weight: 700;
+            min-width: 30px; text-align: center;
+        }
+
+        #vs-result-overlay h2 { font-size: 28px; margin-bottom: 10px; }
+        #vs-result-detail { color: rgba(255,255,255,0.7); font-size: 14px; margin-bottom: 15px; }
+
+        .vs-controls-hint {
+            display: flex; gap: 30px; justify-content: center;
+            font-size: 10px; color: rgba(255,255,255,0.4);
+            margin-top: 8px;
+        }
+        .vs-controls-hint div { text-align: left; line-height: 1.6; }
+        .vs-controls-hint .hint-label { color: rgba(255,255,255,0.7); font-weight: 700; margin-bottom: 2px; }
+
         /* Confetti canvas */
         #confetti-canvas {
             position: absolute;
@@ -926,12 +975,31 @@
                     <button class="mode-btn active" data-mode="classic">Classic</button>
                     <button class="mode-btn" data-mode="sprint">Sprint</button>
                     <button class="mode-btn" data-mode="ultra">Ultra</button>
+                    <button class="mode-btn vs-btn" data-mode="vs">1v1</button>
                 </div>
                 <div class="mode-desc" id="mode-desc">Endloser Modus - Spiele bis zum Ende!</div>
 
                 <div class="name-input-group">
-                    <label for="player-name-input">Dein Name</label>
+                    <label for="player-name-input" id="p1-name-label">Dein Name</label>
                     <input type="text" id="player-name-input" maxlength="10" placeholder="Name eingeben..." autocomplete="off" spellcheck="false" inputmode="text" autocorrect="off" autocapitalize="characters">
+                </div>
+                <div class="name-input-group vs-only" id="p2-name-group" style="display:none">
+                    <label for="p2-name-input">Spieler 2</label>
+                    <input type="text" id="p2-name-input" maxlength="10" placeholder="Spieler 2..." autocomplete="off" spellcheck="false" inputmode="text" autocorrect="off" autocapitalize="characters">
+                </div>
+                <div class="vs-controls-hint vs-only" id="vs-controls-hint" style="display:none">
+                    <div>
+                        <div class="hint-label">Spieler 1 (Blau)</div>
+                        <kbd>A</kbd><kbd>D</kbd> Move &bull; <kbd>W</kbd> Rotate<br>
+                        <kbd>S</kbd> Soft Drop &bull; <kbd>Space</kbd> Hard Drop<br>
+                        <kbd>Q</kbd> Hold &bull; <kbd>E</kbd> 180&deg;
+                    </div>
+                    <div>
+                        <div class="hint-label">Spieler 2 (Pink)</div>
+                        <kbd>&larr;</kbd><kbd>&rarr;</kbd> Move &bull; <kbd>&uarr;</kbd> Rotate<br>
+                        <kbd>&darr;</kbd> Soft Drop &bull; <kbd>Enter</kbd> Hard Drop<br>
+                        <kbd>Shift</kbd> Hold &bull; <kbd>/</kbd> 180&deg;
+                    </div>
                 </div>
                 <button class="start-btn" id="start-btn">START</button>
             </div>
@@ -971,6 +1039,32 @@
                 <span>T-Spins: <span id="tspin-count">0</span></span>
                 <span>Tetrisse: <span id="tetris-count">0</span></span>
                 <span>Max Combo: <span id="max-combo">0</span></span>
+            </div>
+
+            <!-- VS HUD (visible during VS mode) -->
+            <div id="vs-hud" style="display:none">
+                <div class="vs-player-hud vs-p1">
+                    <div class="vs-name" id="vs-p1-name">P1</div>
+                    <div class="vs-score" id="vs-p1-score">0</div>
+                    <div class="vs-lines" id="vs-p1-lines">0 Lines</div>
+                    <div class="vs-attack" id="vs-p1-attack"></div>
+                </div>
+                <div class="vs-divider">VS</div>
+                <div class="vs-player-hud vs-p2">
+                    <div class="vs-name" id="vs-p2-name">P2</div>
+                    <div class="vs-score" id="vs-p2-score">0</div>
+                    <div class="vs-lines" id="vs-p2-lines">0 Lines</div>
+                    <div class="vs-attack" id="vs-p2-attack"></div>
+                </div>
+            </div>
+
+            <!-- VS Winner overlay -->
+            <div class="overlay hidden" id="vs-result-overlay">
+                <h2 id="vs-winner-text">GEWINNER!</h2>
+                <p id="vs-result-detail"></p>
+                <div class="gameover-stats" id="vs-stats"></div>
+                <button class="start-btn" id="vs-restart-btn">NOCHMAL</button>
+                <button class="start-btn" id="vs-menu-btn" style="background:transparent;border:1px solid rgba(255,255,255,0.3);margin-top:8px;font-size:12px;padding:8px 24px;">HAUPTMENUE</button>
             </div>
         </div>
 

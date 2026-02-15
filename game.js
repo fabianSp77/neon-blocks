@@ -11,9 +11,65 @@ const ROWS = 20;
 const HIDDEN_ROWS = 2;
 const TOTAL_ROWS = ROWS + HIDDEN_ROWS;
 const BASE_CELL = 30;
+const MIN_CELL = 10;
 
 // Dynamic cell size
 let CELL = BASE_CELL;
+
+// Timing constants
+const DEFAULT_DAS = 133;    // Delayed Auto Shift (ms)
+const DEFAULT_ARR = 10;     // Auto Repeat Rate (ms)
+const MAX_LOCK_MOVES = 15;
+const LOCK_DELAY_MS = 500;
+const SPAWN_FADE_SPEED = 0.1;
+
+// Game mode constants
+const SPRINT_TARGET = 40;
+const ULTRA_DURATION_MS = 120000;   // 2 minutes
+const LINES_PER_LEVEL = 10;
+
+// Visual constants
+const BG_STAR_COUNT = 60;
+const BG_GRID_SPACING = 40;
+const MAX_PLAYER_NAME_LENGTH = 10;
+const DEFAULT_PLAYER_NAME = 'ANONYM';
+const COUNTDOWN_START = 3;
+
+// Layout constants
+const MOBILE_BREAKPOINT = 768;
+const MOBILE_PADDING = 16;
+
+// Score animation
+const SCORE_LERP_SPEED = 0.15;   // How fast the displayed score catches up
+
+// Perfect Clear bonus
+const PERFECT_CLEAR_BONUS = 3000;
+
+// Level color themes (hue shifts for background/border glow)
+const LEVEL_THEMES = [
+    { bg: [0, 240, 255],  accent: [0, 240, 255],  name: 'Cyan' },       // Level 1-4
+    { bg: [100, 0, 255],  accent: [176, 0, 255],   name: 'Purple' },     // Level 5-8
+    { bg: [255, 0, 170],  accent: [255, 0, 170],   name: 'Pink' },       // Level 9-12
+    { bg: [255, 68, 0],   accent: [255, 106, 0],   name: 'Orange' },     // Level 13-16
+    { bg: [255, 215, 0],  accent: [255, 230, 0],   name: 'Gold' },       // Level 17-20
+    { bg: [255, 255, 255], accent: [255, 255, 255], name: 'Platinum' },   // Level 21+
+];
+
+// Achievement definitions
+const ACHIEVEMENTS = {
+    firstClear:   { id: 'firstClear',   label: 'FIRST BLOOD',     desc: 'Erste Linie!', icon: '\u{1F525}' },
+    firstTetris:  { id: 'firstTetris',  label: 'TETRIS!',         desc: 'Erster Tetris!', icon: '\u{1F4A5}' },
+    firstTspin:   { id: 'firstTspin',   label: 'T-SPIN MASTER',   desc: 'Erster T-Spin!', icon: '\u{1F300}' },
+    combo5:       { id: 'combo5',       label: '5x COMBO',        desc: '5er Combo!', icon: '\u{26A1}' },
+    combo10:      { id: 'combo10',      label: '10x COMBO',       desc: '10er Combo!', icon: '\u{1F525}\u{1F525}' },
+    level5:       { id: 'level5',       label: 'AUFWAERMEN',      desc: 'Level 5 erreicht!', icon: '\u{2B50}' },
+    level10:      { id: 'level10',      label: 'SPEED DEMON',     desc: 'Level 10 erreicht!', icon: '\u{1F47F}' },
+    level15:      { id: 'level15',      label: 'UNSTOPPABLE',     desc: 'Level 15 erreicht!', icon: '\u{1F451}' },
+    perfectClear: { id: 'perfectClear', label: 'PERFECT CLEAR',   desc: 'Board komplett leer!', icon: '\u{2728}' },
+    backToBack3:  { id: 'backToBack3',  label: 'BACK-TO-BACK x3', desc: '3x Back-to-Back!', icon: '\u{1F4AB}' },
+    score50k:     { id: 'score50k',     label: '50K CLUB',        desc: '50.000 Punkte!', icon: '\u{1F3C6}' },
+    score100k:    { id: 'score100k',    label: '100K LEGEND',     desc: '100.000 Punkte!', icon: '\u{1F48E}' },
+};
 
 const COLORS_NORMAL = {
     I: { fill: '#00f0ff', glow: 'rgba(0,240,255,0.6)', dark: '#006670', pattern: 'lines' },
@@ -102,11 +158,18 @@ const MODE_DESCRIPTIONS = {
     classic: 'Endloser Modus - Spiele bis zum Ende!',
     sprint: 'Schaffe 40 Lines so schnell wie moeglich!',
     ultra: '2 Minuten - Maximaler Score!',
+    vs: 'Lokal 1v1 - Wer ueberlebt gewinnt!',
 };
 
+// VS mode board gap
+const VS_GAP = 3; // cells between boards
+
+const DROP_SPEEDS = [800,720,630,550,470,380,300,220,150,100,80,65,50,40,30,25,20,15,10,8,5];
+
+/** @param {number} level - Current game level (1-based) */
 function getDropInterval(level) {
-    const speeds = [800,720,630,550,470,380,300,220,150,100,80,65,50,40,30,25,20,15,10,8,5];
-    return speeds[Math.min(level - 1, speeds.length - 1)];
+    const clampedLevel = Math.max(1, Math.min(level, DROP_SPEEDS.length));
+    return DROP_SPEEDS[clampedLevel - 1];
 }
 
 // --- Settings Manager ---
@@ -121,7 +184,9 @@ class SettingsManager {
         try {
             const saved = JSON.parse(localStorage.getItem('neonblocks_settings'));
             if (saved) Object.assign(this.settings, saved);
-        } catch(e) {}
+        } catch(e) {
+            console.warn('Failed to load settings from localStorage:', e.message);
+        }
     }
 
     save() {
@@ -145,7 +210,7 @@ class SettingsManager {
 // --- Audio Engine ---
 class AudioEngine {
     constructor(settings) {
-        this.ctx = null;
+        this.audioCtx = null;
         this.settings = settings;
         this.masterGain = null;
         this.musicGain = null;
@@ -154,16 +219,18 @@ class AudioEngine {
     }
 
     init() {
-        if (this.ctx) return;
+        if (this.audioCtx) return;
         try {
-            this.ctx = new (window.AudioContext || window.webkitAudioContext)();
-            this.masterGain = this.ctx.createGain();
+            this.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            this.masterGain = this.audioCtx.createGain();
             this.masterGain.gain.value = this.settings.get('volume') / 100;
-            this.masterGain.connect(this.ctx.destination);
-            this.musicGain = this.ctx.createGain();
+            this.masterGain.connect(this.audioCtx.destination);
+            this.musicGain = this.audioCtx.createGain();
             this.musicGain.gain.value = 0.15;
             this.musicGain.connect(this.masterGain);
-        } catch(e) {}
+        } catch(e) {
+            console.warn('AudioContext initialization failed:', e.message);
+        }
     }
 
     setVolume(vol) {
@@ -171,11 +238,11 @@ class AudioEngine {
     }
 
     play(type) {
-        if (!this.settings.get('sfx') || !this.ctx) return;
-        if (this.ctx.state === 'suspended') this.ctx.resume();
-        const now = this.ctx.currentTime;
-        const osc = this.ctx.createOscillator();
-        const gain = this.ctx.createGain();
+        if (!this.settings.get('sfx') || !this.audioCtx) return;
+        if (this.audioCtx.state === 'suspended') this.audioCtx.resume();
+        const now = this.audioCtx.currentTime;
+        const osc = this.audioCtx.createOscillator();
+        const gain = this.audioCtx.createGain();
         osc.connect(gain);
         gain.connect(this.masterGain);
 
@@ -203,7 +270,7 @@ class AudioEngine {
                 osc.frequency.exponentialRampToValueAtTime(800, now + 0.2);
                 gain.gain.setValueAtTime(0.2, now); gain.gain.exponentialRampToValueAtTime(0.001, now + 0.25);
                 osc.start(now); osc.stop(now + 0.25);
-                const osc2 = this.ctx.createOscillator(); const gain2 = this.ctx.createGain();
+                const osc2 = this.audioCtx.createOscillator(); const gain2 = this.audioCtx.createGain();
                 osc2.connect(gain2); gain2.connect(this.masterGain);
                 osc2.type = 'sine'; osc2.frequency.setValueAtTime(600, now + 0.05);
                 osc2.frequency.exponentialRampToValueAtTime(1200, now + 0.25);
@@ -212,7 +279,7 @@ class AudioEngine {
             }
             case 'tetris': {
                 [523, 659, 784, 1047].forEach((freq, i) => {
-                    const o = this.ctx.createOscillator(); const g = this.ctx.createGain();
+                    const o = this.audioCtx.createOscillator(); const g = this.audioCtx.createGain();
                     o.connect(g); g.connect(this.masterGain); o.type = 'sine';
                     o.frequency.setValueAtTime(freq, now + i * 0.08);
                     g.gain.setValueAtTime(0.2, now + i * 0.08); g.gain.exponentialRampToValueAtTime(0.001, now + i * 0.08 + 0.2);
@@ -233,7 +300,7 @@ class AudioEngine {
                 osc.start(now); osc.stop(now + 0.1); break;
             case 'gameover': {
                 [400, 350, 300, 200, 150].forEach((freq, i) => {
-                    const o = this.ctx.createOscillator(); const g = this.ctx.createGain();
+                    const o = this.audioCtx.createOscillator(); const g = this.audioCtx.createGain();
                     o.connect(g); g.connect(this.masterGain); o.type = 'sawtooth';
                     o.frequency.setValueAtTime(freq, now + i * 0.15);
                     g.gain.setValueAtTime(0.15, now + i * 0.15); g.gain.exponentialRampToValueAtTime(0.001, now + i * 0.15 + 0.3);
@@ -242,7 +309,7 @@ class AudioEngine {
             }
             case 'levelup': {
                 [523, 659, 784, 1047, 1319].forEach((freq, i) => {
-                    const o = this.ctx.createOscillator(); const g = this.ctx.createGain();
+                    const o = this.audioCtx.createOscillator(); const g = this.audioCtx.createGain();
                     o.connect(g); g.connect(this.masterGain); o.type = 'triangle';
                     o.frequency.setValueAtTime(freq, now + i * 0.07);
                     g.gain.setValueAtTime(0.2, now + i * 0.07); g.gain.exponentialRampToValueAtTime(0.001, now + i * 0.07 + 0.15);
@@ -257,19 +324,61 @@ class AudioEngine {
                 osc.type = 'sine'; osc.frequency.setValueAtTime(1320, now);
                 gain.gain.setValueAtTime(0.25, now); gain.gain.exponentialRampToValueAtTime(0.001, now + 0.25);
                 osc.start(now); osc.stop(now + 0.25); break;
+            case 'perfectClear': {
+                // Triumphant ascending arpeggio
+                [523, 659, 784, 1047, 1319, 1568].forEach((freq, i) => {
+                    const o = this.audioCtx.createOscillator(); const g = this.audioCtx.createGain();
+                    o.connect(g); g.connect(this.masterGain); o.type = 'sine';
+                    o.frequency.setValueAtTime(freq, now + i * 0.06);
+                    g.gain.setValueAtTime(0.25, now + i * 0.06); g.gain.exponentialRampToValueAtTime(0.001, now + i * 0.06 + 0.3);
+                    o.start(now + i * 0.06); o.stop(now + i * 0.06 + 0.3);
+                }); break;
+            }
+            case 'achievement': {
+                // Short celebratory chime
+                [880, 1100, 1320].forEach((freq, i) => {
+                    const o = this.audioCtx.createOscillator(); const g = this.audioCtx.createGain();
+                    o.connect(g); g.connect(this.masterGain); o.type = 'triangle';
+                    o.frequency.setValueAtTime(freq, now + i * 0.1);
+                    g.gain.setValueAtTime(0.15, now + i * 0.1); g.gain.exponentialRampToValueAtTime(0.001, now + i * 0.1 + 0.2);
+                    o.start(now + i * 0.1); o.stop(now + i * 0.1 + 0.2);
+                }); break;
+            }
+            case 'impact': {
+                // Heavy thud for hard drop
+                osc.type = 'sine'; osc.frequency.setValueAtTime(80, now);
+                osc.frequency.exponentialRampToValueAtTime(30, now + 0.12);
+                gain.gain.setValueAtTime(0.3, now); gain.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
+                osc.start(now); osc.stop(now + 0.12);
+                // White noise burst
+                const noiseOsc = this.audioCtx.createOscillator(); const noiseGain = this.audioCtx.createGain();
+                noiseOsc.connect(noiseGain); noiseGain.connect(this.masterGain);
+                noiseOsc.type = 'sawtooth'; noiseOsc.frequency.setValueAtTime(40, now);
+                noiseGain.gain.setValueAtTime(0.08, now); noiseGain.gain.exponentialRampToValueAtTime(0.001, now + 0.08);
+                noiseOsc.start(now); noiseOsc.stop(now + 0.08); break;
+            }
         }
     }
 
+    /** Set danger level to adjust music tempo. 0=normal, 1=tense, 2=critical */
+    setDangerLevel(level) {
+        this._dangerLevel = level;
+    }
+
     startMusic() {
-        if (!this.ctx || !this.settings.get('music') || this.musicPlaying) return;
+        if (!this.audioCtx || !this.settings.get('music') || this.musicPlaying) return;
         this.musicPlaying = true;
+        this._dangerLevel = 0;
         this._playMusicLoop();
     }
 
     _playMusicLoop() {
-        if (!this.musicPlaying || !this.ctx) return;
-        const now = this.ctx.currentTime;
-        const bpm = 128;
+        if (!this.musicPlaying || !this.audioCtx) return;
+        const now = this.audioCtx.currentTime;
+        // Speed up BPM based on danger level
+        const baseBpm = 128;
+        const dangerBpm = this._dangerLevel === 2 ? 170 : this._dangerLevel === 1 ? 145 : baseBpm;
+        const bpm = dangerBpm;
         const beatLen = 60 / bpm;
 
         // Synthwave bass line
@@ -277,8 +386,8 @@ class AudioEngine {
         const loopLen = bassNotes.length * beatLen;
 
         bassNotes.forEach((freq, i) => {
-            const o = this.ctx.createOscillator();
-            const g = this.ctx.createGain();
+            const o = this.audioCtx.createOscillator();
+            const g = this.audioCtx.createGain();
             o.connect(g); g.connect(this.musicGain);
             o.type = 'sawtooth';
             o.frequency.setValueAtTime(freq, now + i * beatLen);
@@ -291,8 +400,8 @@ class AudioEngine {
         });
 
         // Pad
-        const padO = this.ctx.createOscillator();
-        const padG = this.ctx.createGain();
+        const padO = this.audioCtx.createOscillator();
+        const padG = this.audioCtx.createGain();
         padO.connect(padG); padG.connect(this.musicGain);
         padO.type = 'sine';
         padO.frequency.setValueAtTime(261.63, now);
@@ -306,7 +415,7 @@ class AudioEngine {
     stopMusic() {
         this.musicPlaying = false;
         clearTimeout(this._musicTimeout);
-        this.musicNodes.forEach(n => { try { n.stop(); } catch(e) {} });
+        this.musicNodes.forEach(node => { try { node.stop(); } catch(_) { /* node already stopped */ } });
         this.musicNodes = [];
     }
 }
@@ -438,17 +547,254 @@ class BagRandomizer {
     }
 }
 
+// --- VS Mode: Per-Player Game Board ---
+class GameBoard {
+    constructor(playerNum) {
+        this.playerNum = playerNum;
+        this.grid = []; this.currentPiece = null; this.holdPiece = null;
+        this.holdUsed = false; this.nextPieces = [];
+        this.score = 0; this.level = 1; this.lines = 0;
+        this.combo = -1; this.maxCombo = 0;
+        this.tspinCount = 0; this.tetrisCount = 0;
+        this.backToBack = false; this.backToBackCount = 0;
+        this.lastTspin = 'none'; this.lockDelay = 0; this.lockMoves = 0;
+        this.lineClearAnim = null;
+        this.screenShake = 0; this.screenShakeIntensity = 0;
+        this.levelUpFlash = 0; this.dangerPulse = 0; this.spawnAlpha = 1;
+        this.impactFlash = 0; this.impactFlashRows = [];
+        this.randomizer = new BagRandomizer();
+        this.alive = true; this.pendingGarbage = 0;
+        this.lastDrop = 0; this.keys = {}; this.dasTimer = {}; this.arrTimer = {};
+    }
+
+    init() {
+        this.grid = Array.from({ length: TOTAL_ROWS }, () => Array(COLS).fill(null));
+        this.currentPiece = null; this.holdPiece = null; this.holdUsed = false;
+        this.nextPieces = []; this.score = 0; this.level = 1; this.lines = 0;
+        this.combo = -1; this.maxCombo = 0;
+        this.tspinCount = 0; this.tetrisCount = 0;
+        this.backToBack = false; this.backToBackCount = 0; this.lastTspin = 'none';
+        this.lineClearAnim = null; this.screenShake = 0; this.levelUpFlash = 0;
+        this.impactFlash = 0; this.impactFlashRows = [];
+        this.randomizer = new BagRandomizer();
+        this.alive = true; this.pendingGarbage = 0; this.lockDelay = 0; this.lockMoves = 0;
+        this.lastDrop = 0;
+        for (let i = 0; i < 5; i++) this.nextPieces.push(this.randomizer.next());
+        this.spawnPiece();
+    }
+
+    spawnPiece(type) {
+        if (!type) type = this.nextPieces.shift();
+        while (this.nextPieces.length < 5) this.nextPieces.push(this.randomizer.next());
+        const shape = PIECES[type][0];
+        const piece = { type, rotation: 0, shape, x: Math.floor((COLS - shape[0].length) / 2), y: 0 };
+        let firstBlockRow = 0;
+        for (let r = 0; r < shape.length; r++) { if (shape[r].some(c => c)) { firstBlockRow = r; break; } }
+        piece.y = HIDDEN_ROWS - firstBlockRow;
+        if (!this.isValid(piece)) { piece.y--; if (!this.isValid(piece)) { this.alive = false; return null; } }
+        this.currentPiece = piece; this.lockDelay = 0; this.lockMoves = 0;
+        this.lastTspin = 'none'; this.holdUsed = false; this.spawnAlpha = 0;
+        return piece;
+    }
+
+    isValid(piece, shape, x, y) {
+        shape = shape || piece.shape; x = x !== undefined ? x : piece.x; y = y !== undefined ? y : piece.y;
+        for (let row = 0; row < shape.length; row++) {
+            for (let col = 0; col < shape[row].length; col++) {
+                if (shape[row][col]) {
+                    const newX = x + col, newY = y + row;
+                    if (newX < 0 || newX >= COLS || newY >= TOTAL_ROWS) return false;
+                    if (newY >= 0 && this.grid[newY] && this.grid[newY][newX]) return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    movePiece(dx, dy) {
+        const p = this.currentPiece; if (!p) return false;
+        if (this.isValid(p, p.shape, p.x + dx, p.y + dy)) {
+            p.x += dx; p.y += dy;
+            if (dx !== 0) { this.lastTspin = 'none'; this.resetLockDelay(); }
+            return true;
+        }
+        return false;
+    }
+
+    rotatePiece(dir = 1) {
+        const p = this.currentPiece; if (!p || p.type === 'O') return false;
+        if (dir === 2) {
+            const newRot = (p.rotation + 2) % 4, newShape = PIECES[p.type][newRot];
+            for (const [kx, ky] of [[0,0],[0,1],[0,-1],[1,0],[-1,0]]) {
+                if (this.isValid(p, newShape, p.x + kx, p.y + ky)) {
+                    p.x += kx; p.y += ky; p.rotation = newRot; p.shape = newShape;
+                    this.resetLockDelay(); return true;
+                }
+            }
+            return false;
+        }
+        const oldRot = p.rotation, newRot = (oldRot + dir + 4) % 4;
+        const newShape = PIECES[p.type][newRot];
+        const kicks = p.type === 'I' ? WALL_KICKS.I : WALL_KICKS.normal;
+        const sign = dir === 1 ? 1 : -1;
+        for (const [kx, ky] of kicks[dir === 1 ? oldRot : newRot]) {
+            const testX = p.x + kx * sign, testY = p.y - ky * sign;
+            if (this.isValid(p, newShape, testX, testY)) {
+                p.x = testX; p.y = testY; p.rotation = newRot; p.shape = newShape;
+                this.checkTspin(p); this.resetLockDelay(); return true;
+            }
+        }
+        return false;
+    }
+
+    checkTspin(piece) {
+        if (piece.type !== 'T') { this.lastTspin = 'none'; return; }
+        const cx = piece.x + 1, cy = piece.y + 1;
+        let filled = 0;
+        [[cx-1,cy-1],[cx+1,cy-1],[cx-1,cy+1],[cx+1,cy+1]].forEach(([x, y]) => {
+            if (x < 0 || x >= COLS || y >= TOTAL_ROWS || (y >= 0 && this.grid[y] && this.grid[y][x])) filled++;
+        });
+        if (filled >= 3) {
+            const fc = this.getTFrontCorners(piece);
+            const ff = fc.filter(([x, y]) => x < 0 || x >= COLS || y >= TOTAL_ROWS || (y >= 0 && this.grid[y] && this.grid[y][x])).length;
+            this.lastTspin = ff === 2 ? 'full' : 'mini';
+        } else { this.lastTspin = 'none'; }
+    }
+
+    getTFrontCorners(piece) {
+        const cx = piece.x + 1, cy = piece.y + 1;
+        switch (piece.rotation) {
+            case 0: return [[cx-1,cy-1],[cx+1,cy-1]];
+            case 1: return [[cx+1,cy-1],[cx+1,cy+1]];
+            case 2: return [[cx-1,cy+1],[cx+1,cy+1]];
+            case 3: return [[cx-1,cy-1],[cx-1,cy+1]];
+        }
+    }
+
+    resetLockDelay() { if (this.lockMoves < MAX_LOCK_MOVES) { this.lockDelay = 0; this.lockMoves++; } }
+    getGhostY() { const p = this.currentPiece; if (!p) return 0; let gy = p.y; while (this.isValid(p, p.shape, p.x, gy + 1)) gy++; return gy; }
+
+    hardDrop() {
+        const p = this.currentPiece; if (!p) return 0;
+        let cells = 0;
+        while (this.isValid(p, p.shape, p.x, p.y + 1)) { p.y++; cells++; }
+        this.score += cells * HARD_DROP_SCORE;
+        this.impactFlash = 8; this.impactFlashRows = [];
+        for (let row = 0; row < p.shape.length; row++) { if (p.shape[row].some(c => c)) this.impactFlashRows.push(p.y + row - HIDDEN_ROWS); }
+        if (cells > 3) { this.screenShake = Math.min(8, cells); this.screenShakeIntensity = Math.min(5, cells * 0.6); }
+        return cells;
+    }
+
+    softDrop() { if (this.movePiece(0, 1)) { this.score += SOFT_DROP_SCORE; this.lastDrop = performance.now(); return true; } return false; }
+
+    holdCurrentPiece() {
+        if (this.holdUsed || !this.currentPiece) return false;
+        const type = this.currentPiece.type;
+        if (this.holdPiece) { const held = this.holdPiece; this.holdPiece = type; this.spawnPiece(held); }
+        else { this.holdPiece = type; this.spawnPiece(); }
+        this.holdUsed = true; return true;
+    }
+
+    lockPiece() {
+        const p = this.currentPiece; if (!p) return { cleared: 0, attack: 0, rows: [] };
+        for (let row = 0; row < p.shape.length; row++) {
+            for (let col = 0; col < p.shape[row].length; col++) {
+                if (p.shape[row][col]) {
+                    const gy = p.y + row, gx = p.x + col;
+                    if (gy >= 0 && gy < TOTAL_ROWS && gx >= 0 && gx < COLS) this.grid[gy][gx] = p.type;
+                }
+            }
+        }
+        this.currentPiece = null;
+        return this.processScoring(this.checkLines());
+    }
+
+    checkLines() {
+        const full = [];
+        for (let row = 0; row < TOTAL_ROWS; row++) { if (this.grid[row] && this.grid[row].every(cell => cell !== null)) full.push(row); }
+        return full;
+    }
+
+    clearLines(rows) {
+        rows.sort((a, b) => a - b);
+        for (const row of rows.reverse()) this.grid.splice(row, 1);
+        while (this.grid.length < TOTAL_ROWS) this.grid.unshift(Array(COLS).fill(null));
+    }
+
+    processScoring(clearedRows) {
+        const numLines = clearedRows.length;
+        if (numLines === 0) { this.combo = -1; return { cleared: 0, attack: 0, rows: clearedRows }; }
+        this.combo++; if (this.combo > this.maxCombo) this.maxCombo = this.combo;
+        let points = 0;
+        const isTetris = numLines === 4, isTspin = this.lastTspin !== 'none';
+        if (isTspin) {
+            this.tspinCount++;
+            if (this.lastTspin === 'mini') points = numLines === 0 ? TSPIN_SCORES.mini : TSPIN_SCORES.miniSingle;
+            else points = [0, TSPIN_SCORES.single, TSPIN_SCORES.double, TSPIN_SCORES.triple][numLines] || 0;
+        } else { points = LINE_SCORES[numLines] || 0; }
+        if (isTetris) this.tetrisCount++;
+        if ((isTetris || isTspin) && this.backToBack) { this.backToBackCount++; points = Math.floor(points * 1.5); }
+        else if (!(isTetris || isTspin)) { this.backToBackCount = 0; }
+        this.backToBack = isTetris || isTspin;
+        if (this.combo > 0) points += COMBO_BONUS * this.combo * this.level;
+        points *= this.level; this.score += points; this.lines += numLines;
+        const newLevel = Math.floor(this.lines / LINES_PER_LEVEL) + 1;
+        if (newLevel > this.level) { this.level = newLevel; this.levelUpFlash = 20; }
+        // Attack calculation
+        const ATTACK_TABLE = [0, 0, 1, 2, 4];
+        let attack = ATTACK_TABLE[numLines] || 0;
+        if (isTspin) attack = Math.max(attack, numLines * 2);
+        if (this.backToBack && this.backToBackCount > 0) attack += 1;
+        if (this.combo > 1) attack += Math.floor(this.combo / 2);
+        const isEmpty = this.grid.every(row => row.every(c => c === null));
+        if (isEmpty) { this.score += PERFECT_CLEAR_BONUS * this.level; attack += 6; }
+        if (numLines >= 2) { this.screenShake = Math.max(this.screenShake, 3 + numLines * 2); this.screenShakeIntensity = Math.max(this.screenShakeIntensity, 2 + numLines); }
+        return { cleared: numLines, attack, rows: clearedRows, isTetris, isTspin, isEmpty };
+    }
+
+    addGarbage(count) {
+        const gapCol = Math.floor(Math.random() * COLS);
+        for (let i = 0; i < count; i++) {
+            this.grid.shift();
+            const row = Array(COLS).fill('G'); row[gapCol] = null;
+            this.grid.push(row);
+        }
+        if (this.currentPiece && !this.isValid(this.currentPiece)) {
+            this.currentPiece.y -= count;
+            if (!this.isValid(this.currentPiece)) this.alive = false;
+        }
+    }
+
+    getDangerLevel() {
+        for (let row = HIDDEN_ROWS; row < TOTAL_ROWS; row++) {
+            if (this.grid[row].some(c => c !== null)) {
+                const h = row - HIDDEN_ROWS;
+                if (h <= 4) return 2; if (h <= 8) return 1; return 0;
+            }
+        }
+        return 0;
+    }
+}
+
+// Garbage piece color
+COLORS_NORMAL['G'] = { fill: '#555', glow: 'rgba(100,100,100,0.4)', dark: '#333', pattern: 'grid' };
+COLORS_COLORBLIND['G'] = { fill: '#555', glow: 'rgba(100,100,100,0.4)', dark: '#333', pattern: 'grid' };
+
 // --- Main Game ---
 class NeonBlocks {
     constructor() {
         this.settingsManager = new SettingsManager();
-        this.canvas = document.getElementById('game-canvas');
+
+        // --- Cache DOM elements ---
+        this.dom = this._cacheDomElements();
+
+        this.canvas = this.dom.gameCanvas;
         this.ctx = this.canvas.getContext('2d');
 
-        this.bgCanvas = document.getElementById('bg-canvas');
+        this.bgCanvas = this.dom.bgCanvas;
         this.bgCtx = this.bgCanvas.getContext('2d');
 
-        this.confettiCanvas = document.getElementById('confetti-canvas');
+        this.confettiCanvas = this.dom.confettiCanvas;
         this.confetti = new ConfettiSystem(this.confettiCanvas);
 
         this.audio = new AudioEngine(this.settingsManager);
@@ -459,8 +805,6 @@ class NeonBlocks {
         this.gameMode = 'classic';
         this.modeTimer = 0;
         this.modeStartTime = 0;
-        this.sprintTarget = 40;
-        this.ultraDuration = 120000; // 2 minutes
 
         // State
         this.grid = [];
@@ -480,8 +824,6 @@ class NeonBlocks {
         this.lastDrop = 0;
         this.lockDelay = 0;
         this.lockMoves = 0;
-        this.MAX_LOCK_MOVES = 15;
-        this.LOCK_DELAY = 500;
         this.lastTspin = 'none';
         this.lineClearAnim = null;
         this.screenShake = 0;
@@ -490,40 +832,57 @@ class NeonBlocks {
         this.dangerPulse = 0;
         this.spawnAlpha = 1;
 
+        // Dirty flags for UI optimization
+        this._prevUI = { score: -1, level: -1, lines: -1, tspins: -1, tetrises: -1, maxCombo: -1 };
+
+        // Score animation
+        this.displayedScore = 0;
+
+        // Hard drop impact flash
+        this.impactFlash = 0;
+        this.impactFlashRows = [];
+
+        // Achievement system
+        this.unlockedAchievements = new Set();
+        this._achievementQueue = [];
+        this._achievementVisible = false;
+        this.backToBackCount = 0;
+
+        // Level theme tracking
+        this._currentThemeIndex = -1;
+
+        // VS mode
+        this.vsBoards = null; // [GameBoard, GameBoard] when in VS mode
+        this.p2Name = '';
+
         // Player
         this.playerName = '';
 
         // DAS / ARR
-        this.das = 133;
-        this.arr = 10;
+        this.das = DEFAULT_DAS;
+        this.arr = DEFAULT_ARR;
         this.keys = {};
         this.dasTimer = {};
         this.arrTimer = {};
 
         // Mobile detect
-        this.isMobile = /Android|iPhone|iPad|iPod|webOS/i.test(navigator.userAgent) || window.innerWidth <= 768;
+        this.isMobile = /Android|iPhone|iPad|iPod|webOS/i.test(navigator.userAgent) || window.innerWidth <= MOBILE_BREAKPOINT;
 
         // Move settings button into HUD on mobile
-        if (this.isMobile || window.innerWidth <= 768) {
-            const settingsBtn = document.getElementById('settings-btn');
-            const hudSlot = document.getElementById('hud-settings-slot');
+        if (this.isMobile || window.innerWidth <= MOBILE_BREAKPOINT) {
+            const settingsBtn = this.dom.settingsBtn;
+            const hudSlot = this.dom.hudSettingsSlot;
             if (settingsBtn && hudSlot) {
                 hudSlot.appendChild(settingsBtn);
             }
         }
 
         // High scores
-        this.highScores = JSON.parse(localStorage.getItem('neonblocks_scores_v2') || '[]');
-        const oldScores = JSON.parse(localStorage.getItem('neonblocks_scores') || '[]');
-        if (oldScores.length > 0 && this.highScores.length === 0) {
-            this.highScores = oldScores.map(s => typeof s === 'number' ? { name: '???', score: s, level: 1, lines: 0 } : s);
-            localStorage.setItem('neonblocks_scores_v2', JSON.stringify(this.highScores));
-        }
+        this._loadHighScores();
 
         // Restore player name
         this.playerName = localStorage.getItem('neonblocks_player') || '';
-        const nameInput = document.getElementById('player-name-input');
-        if (this.playerName) nameInput.value = this.playerName;
+        if (this.playerName) this.dom.playerNameInput.value = this.playerName;
 
         // Apply settings
         this.applyColorblind();
@@ -545,7 +904,7 @@ class NeonBlocks {
         this.resizeBg();
 
         // Focus
-        setTimeout(() => nameInput.focus(), 100);
+        setTimeout(() => this.dom.playerNameInput.focus(), 100);
 
         this.lastTime = 0;
         this.animFrame = requestAnimationFrame(t => this.loop(t));
@@ -559,35 +918,141 @@ class NeonBlocks {
         setTimeout(() => { this.calculateCellSize(); }, 600);
     }
 
-    // --- Dynamic Cell Sizing ---
+    /** Cache all frequently used DOM element references to avoid per-frame lookups. */
+    _cacheDomElements() {
+        return {
+            gameCanvas: document.getElementById('game-canvas'),
+            bgCanvas: document.getElementById('bg-canvas'),
+            confettiCanvas: document.getElementById('confetti-canvas'),
+            gameContainer: document.getElementById('game-container'),
+            gameWrapper: document.getElementById('game-wrapper'),
+            // Overlays
+            startOverlay: document.getElementById('start-overlay'),
+            pauseOverlay: document.getElementById('pause-overlay'),
+            gameoverOverlay: document.getElementById('gameover-overlay'),
+            // HUD elements (updated every frame)
+            scoreDisplay: document.getElementById('score-display'),
+            levelDisplay: document.getElementById('level-display'),
+            linesDisplay: document.getElementById('lines-display'),
+            hudScore: document.getElementById('hud-score'),
+            hudLevel: document.getElementById('hud-level'),
+            hudLines: document.getElementById('hud-lines'),
+            tspinCount: document.getElementById('tspin-count'),
+            tetrisCount: document.getElementById('tetris-count'),
+            maxCombo: document.getElementById('max-combo'),
+            comboDisplay: document.getElementById('combo-display'),
+            modeTimer: document.getElementById('mode-timer'),
+            countdownDisplay: document.getElementById('countdown-display'),
+            // Player & controls
+            playerNameInput: document.getElementById('player-name-input'),
+            playerNameDisplay: document.getElementById('player-name-display'),
+            startBtn: document.getElementById('start-btn'),
+            resumeBtn: document.getElementById('resume-btn'),
+            restartBtn: document.getElementById('restart-btn'),
+            shareBtn: document.getElementById('share-btn'),
+            settingsBtn: document.getElementById('settings-btn'),
+            hudSettingsSlot: document.getElementById('hud-settings-slot'),
+            // Settings
+            settingsPanel: document.getElementById('settings-panel'),
+            settingsOverlay: document.getElementById('settings-overlay'),
+            settingsClose: document.getElementById('settings-close'),
+            volumeSlider: document.getElementById('volume-slider'),
+            // Game over stats
+            finalScore: document.getElementById('final-score'),
+            finalLevel: document.getElementById('final-level'),
+            finalLines: document.getElementById('final-lines'),
+            finalTspins: document.getElementById('final-tspins'),
+            finalTetrises: document.getElementById('final-tetrises'),
+            finalCombo: document.getElementById('final-combo'),
+            finalTime: document.getElementById('final-time'),
+            finalTimeLabel: document.getElementById('final-time-label'),
+            newHighscoreMsg: document.getElementById('new-highscore-msg'),
+            // Leaderboards
+            highscoreList: document.getElementById('highscore-list'),
+            mobileHighscoreList: document.getElementById('mobile-highscore-list'),
+            // Mobile
+            mobileControls: document.getElementById('mobile-controls'),
+            mobileHud: document.getElementById('mobile-hud'),
+            mobileLeaderboard: document.getElementById('mobile-leaderboard'),
+            lbToggle: document.getElementById('lb-toggle'),
+            // Mode & stats
+            modeDesc: document.getElementById('mode-desc'),
+            statsBar: document.getElementById('stats-bar'),
+            // VS mode
+            p2NameGroup: document.getElementById('p2-name-group'),
+            p2NameInput: document.getElementById('p2-name-input'),
+            p1NameLabel: document.getElementById('p1-name-label'),
+            vsControlsHint: document.getElementById('vs-controls-hint'),
+            vsHud: document.getElementById('vs-hud'),
+            vsP1Name: document.getElementById('vs-p1-name'),
+            vsP2Name: document.getElementById('vs-p2-name'),
+            vsP1Score: document.getElementById('vs-p1-score'),
+            vsP2Score: document.getElementById('vs-p2-score'),
+            vsP1Lines: document.getElementById('vs-p1-lines'),
+            vsP2Lines: document.getElementById('vs-p2-lines'),
+            vsP1Attack: document.getElementById('vs-p1-attack'),
+            vsP2Attack: document.getElementById('vs-p2-attack'),
+            vsResultOverlay: document.getElementById('vs-result-overlay'),
+            vsWinnerText: document.getElementById('vs-winner-text'),
+            vsResultDetail: document.getElementById('vs-result-detail'),
+            vsStats: document.getElementById('vs-stats'),
+            vsRestartBtn: document.getElementById('vs-restart-btn'),
+            vsMenuBtn: document.getElementById('vs-menu-btn'),
+        };
+    }
+
+    /** Create the achievement toast container if it doesn't exist. */
+    _ensureAchievementContainer() {
+        if (!this._achievementContainer) {
+            const container = document.createElement('div');
+            container.id = 'achievement-container';
+            container.style.cssText = 'position:fixed;top:20px;left:50%;transform:translateX(-50%);z-index:9999;pointer-events:none;display:flex;flex-direction:column;align-items:center;gap:8px;';
+            document.body.appendChild(container);
+            this._achievementContainer = container;
+        }
+    }
+
+    /** Load high scores from localStorage, migrating old format if needed. */
+    _loadHighScores() {
+        try {
+            this.highScores = JSON.parse(localStorage.getItem('neonblocks_scores_v2') || '[]');
+        } catch(e) {
+            console.warn('Failed to parse high scores:', e.message);
+            this.highScores = [];
+        }
+        try {
+            const oldScores = JSON.parse(localStorage.getItem('neonblocks_scores') || '[]');
+            if (oldScores.length > 0 && this.highScores.length === 0) {
+                this.highScores = oldScores.map(s => typeof s === 'number' ? { name: '???', score: s, level: 1, lines: 0 } : s);
+                localStorage.setItem('neonblocks_scores_v2', JSON.stringify(this.highScores));
+            }
+        } catch(e) {
+            console.warn('Failed to migrate old scores:', e.message);
+        }
+    }
+
+    /** Recalculate cell size based on available viewport space. */
     calculateCellSize() {
         const vh = window.innerHeight;
         const vw = window.innerWidth;
-        const isMob = vw <= 768;
+        const isMob = vw <= MOBILE_BREAKPOINT;
 
         let availH, availW;
         if (isMob) {
-            // Measure actual controls/hud height, with generous fallbacks
-            const controlsEl = document.getElementById('mobile-controls');
-            const hudEl = document.getElementById('mobile-hud');
-            const lbEl = document.getElementById('mobile-leaderboard');
-            const controlsH = (controlsEl && controlsEl.offsetHeight > 0) ? controlsEl.offsetHeight : 200;
-            const hudH = (hudEl && hudEl.offsetHeight > 0) ? hudEl.offsetHeight : 55;
-            const lbH = (lbEl && lbEl.offsetHeight > 0) ? lbEl.offsetHeight : 30;
+            const controlsH = (this.dom.mobileControls && this.dom.mobileControls.offsetHeight > 0) ? this.dom.mobileControls.offsetHeight : 200;
+            const hudH = (this.dom.mobileHud && this.dom.mobileHud.offsetHeight > 0) ? this.dom.mobileHud.offsetHeight : 55;
+            const lbH = (this.dom.mobileLeaderboard && this.dom.mobileLeaderboard.offsetHeight > 0) ? this.dom.mobileLeaderboard.offsetHeight : 30;
             const safeMargin = 20;
 
-            // Account for safe areas
-            const safeTop = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--safe-top')) || 0;
-            const safeBottom = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--safe-bottom')) || 0;
+            const safeTop = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--safe-top'), 10) || 0;
+            const safeBottom = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--safe-bottom'), 10) || 0;
 
             availH = vh - hudH - controlsH - lbH - safeMargin - safeTop - safeBottom;
-            availW = vw - 16; // 8px padding each side
+            availW = vw - MOBILE_PADDING;
 
-            // Update game-wrapper padding to account for controls
-            const wrapper = document.getElementById('game-wrapper');
-            if (wrapper) {
-                wrapper.style.paddingTop = (hudH + 5) + 'px';
-                wrapper.style.paddingBottom = (controlsH + lbH + 5) + 'px';
+            if (this.dom.gameWrapper) {
+                this.dom.gameWrapper.style.paddingTop = (hudH + 5) + 'px';
+                this.dom.gameWrapper.style.paddingBottom = (controlsH + lbH + 5) + 'px';
             }
         } else {
             availH = vh - 60;
@@ -596,12 +1061,11 @@ class NeonBlocks {
 
         const cellFromH = Math.floor(availH / ROWS);
         const cellFromW = Math.floor(availW / COLS);
-        CELL = Math.max(10, Math.min(BASE_CELL, cellFromH, cellFromW));
+        CELL = Math.max(MIN_CELL, Math.min(BASE_CELL, cellFromH, cellFromW));
 
         this.canvas.width = COLS * CELL;
         this.canvas.height = ROWS * CELL;
 
-        // Resize confetti canvas
         this.confettiCanvas.width = this.canvas.width;
         this.confettiCanvas.height = this.canvas.height;
     }
@@ -613,10 +1077,10 @@ class NeonBlocks {
 
     // --- Settings Panel ---
     setupSettings() {
-        const panel = document.getElementById('settings-panel');
-        const overlay = document.getElementById('settings-overlay');
-        const btn = document.getElementById('settings-btn');
-        const closeBtn = document.getElementById('settings-close');
+        const panel = this.dom.settingsPanel;
+        const overlay = this.dom.settingsOverlay;
+        const btn = this.dom.settingsBtn;
+        const closeBtn = this.dom.settingsClose;
 
         const openSettings = (e) => {
             e.preventDefault();
@@ -632,7 +1096,6 @@ class NeonBlocks {
             overlay.classList.remove('open');
         };
 
-        // Use both touch and click for reliable mobile support
         btn.addEventListener('touchend', openSettings, { passive: false });
         btn.addEventListener('click', openSettings);
         closeBtn.addEventListener('touchend', closeSettings, { passive: false });
@@ -640,12 +1103,11 @@ class NeonBlocks {
         overlay.addEventListener('touchend', closeSettings, { passive: false });
         overlay.addEventListener('click', closeSettings);
 
-        // Volume slider - works with both touch drag and click
-        const volSlider = document.getElementById('volume-slider');
+        const volSlider = this.dom.volumeSlider;
         volSlider.value = this.settingsManager.get('volume');
         const handleVolume = () => {
-            const val = parseInt(volSlider.value);
-            this.settingsManager.set('volume', val);
+            const val = parseInt(volSlider.value, 10);
+            this.settingsManager.set('volume', Math.max(0, Math.min(100, val)));
             this.audio.setVolume(val);
         };
         volSlider.addEventListener('input', handleVolume);
@@ -683,20 +1145,25 @@ class NeonBlocks {
 
     // --- Mode Selector ---
     setupModeSelector() {
-        const modeDesc = document.getElementById('mode-desc');
-        document.querySelectorAll('.mode-btn').forEach(btn => {
+        const modeBtns = document.querySelectorAll('.mode-btn');
+        modeBtns.forEach(btn => {
             btn.addEventListener('click', () => {
-                document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+                modeBtns.forEach(b => b.classList.remove('active'));
                 btn.classList.add('active');
                 this.gameMode = btn.dataset.mode;
-                modeDesc.textContent = MODE_DESCRIPTIONS[this.gameMode];
+                this.dom.modeDesc.textContent = MODE_DESCRIPTIONS[this.gameMode];
+                // Show/hide VS-specific UI
+                const isVs = this.gameMode === 'vs';
+                this.dom.p2NameGroup.style.display = isVs ? '' : 'none';
+                this.dom.vsControlsHint.style.display = isVs ? '' : 'none';
+                this.dom.p1NameLabel.textContent = isVs ? 'Spieler 1' : 'Dein Name';
             });
         });
     }
 
     // --- Background ---
     initBackground() {
-        for (let i = 0; i < 60; i++) {
+        for (let i = 0; i < BG_STAR_COUNT; i++) {
             this.bgStars.push({
                 x: Math.random() * window.innerWidth,
                 y: Math.random() * window.innerHeight,
@@ -714,16 +1181,18 @@ class NeonBlocks {
 
     drawBackground() {
         const ctx = this.bgCtx;
+        const theme = this._getLevelTheme();
+        const [tr, tg, tb] = theme.bg;
+
         ctx.fillStyle = '#0a0a1a';
         ctx.fillRect(0, 0, this.bgCanvas.width, this.bgCanvas.height);
 
-        ctx.strokeStyle = 'rgba(0, 240, 255, 0.03)';
+        ctx.strokeStyle = `rgba(${tr}, ${tg}, ${tb}, 0.03)`;
         ctx.lineWidth = 1;
-        const gs = 40;
-        for (let x = 0; x < this.bgCanvas.width; x += gs) {
+        for (let x = 0; x < this.bgCanvas.width; x += BG_GRID_SPACING) {
             ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, this.bgCanvas.height); ctx.stroke();
         }
-        for (let y = 0; y < this.bgCanvas.height; y += gs) {
+        for (let y = 0; y < this.bgCanvas.height; y += BG_GRID_SPACING) {
             ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(this.bgCanvas.width, y); ctx.stroke();
         }
 
@@ -731,13 +1200,13 @@ class NeonBlocks {
             star.y += star.speed;
             if (star.y > this.bgCanvas.height) { star.y = 0; star.x = Math.random() * this.bgCanvas.width; }
             ctx.beginPath();
-            ctx.fillStyle = `rgba(0, 240, 255, ${star.alpha})`;
+            ctx.fillStyle = `rgba(${tr}, ${tg}, ${tb}, ${star.alpha})`;
             ctx.arc(star.x, star.y, star.size, 0, Math.PI * 2);
             ctx.fill();
         });
     }
 
-    // --- Grid ---
+    /** Initialize an empty game grid with TOTAL_ROWS x COLS cells. */
     createGrid() {
         this.grid = Array.from({ length: TOTAL_ROWS }, () => Array(COLS).fill(null));
     }
@@ -754,7 +1223,11 @@ class NeonBlocks {
         return 0;
     }
 
-    // --- Pieces ---
+    /**
+     * Spawn a new falling piece from the queue (or a specific type).
+     * @param {string} [type] - Piece type to spawn; uses next from queue if omitted.
+     * @returns {object|null} The spawned piece, or null if game over.
+     */
     spawnPiece(type) {
         if (!type) type = this.nextPieces.shift();
         while (this.nextPieces.length < 5) this.nextPieces.push(this.randomizer.next());
@@ -781,6 +1254,14 @@ class NeonBlocks {
         return piece;
     }
 
+    /**
+     * Check if a piece placement is valid (no collisions, within bounds).
+     * @param {object} piece - The piece to validate.
+     * @param {number[][]} [shape] - Shape override (defaults to piece.shape).
+     * @param {number} [x] - X position override (defaults to piece.x).
+     * @param {number} [y] - Y position override (defaults to piece.y).
+     * @returns {boolean}
+     */
     isValid(piece, shape, x, y) {
         shape = shape || piece.shape;
         x = x !== undefined ? x : piece.x;
@@ -799,6 +1280,7 @@ class NeonBlocks {
         return true;
     }
 
+    /** Move the current piece by (dx, dy). Returns true if successful. */
     movePiece(dx, dy) {
         const p = this.currentPiece;
         if (!p) return false;
@@ -811,6 +1293,7 @@ class NeonBlocks {
         return false;
     }
 
+    /** Rotate the current piece. @param {number} dir - 1=CW, -1=CCW, 2=180° */
     rotatePiece(dir = 1) {
         const p = this.currentPiece;
         if (!p || p.type === 'O') return false;
@@ -878,9 +1361,10 @@ class NeonBlocks {
     }
 
     resetLockDelay() {
-        if (this.lockMoves < this.MAX_LOCK_MOVES) { this.lockDelay = 0; this.lockMoves++; }
+        if (this.lockMoves < MAX_LOCK_MOVES) { this.lockDelay = 0; this.lockMoves++; }
     }
 
+    /** Instantly drop the current piece to the bottom and lock it. */
     hardDrop() {
         const p = this.currentPiece;
         if (!p) return;
@@ -901,7 +1385,24 @@ class NeonBlocks {
         }
 
         this.audio.play('drop');
-        this.haptic(10);
+        this.audio.play('impact');
+        this.haptic(15);
+
+        // Impact flash at landing row
+        this.impactFlash = 8;
+        this.impactFlashRows = [];
+        for (let row = 0; row < p.shape.length; row++) {
+            if (p.shape[row].some(c => c)) {
+                this.impactFlashRows.push(p.y + row - HIDDEN_ROWS);
+            }
+        }
+
+        // Screen shake proportional to drop distance
+        if (cells > 3) {
+            this.screenShake = Math.min(8, cells);
+            this.screenShakeIntensity = Math.min(5, cells * 0.6);
+        }
+
         this.lockPiece();
     }
 
@@ -934,6 +1435,7 @@ class NeonBlocks {
         this.updateHoldDisplay();
     }
 
+    /** Lock the current piece into the grid and trigger line clears. */
     lockPiece() {
         const p = this.currentPiece;
         if (!p) return;
@@ -979,16 +1481,35 @@ class NeonBlocks {
     }
 
     clearLines(rows) {
+        // Escalating combo: more particles for higher combos
+        const comboMultiplier = Math.min(3, 1 + this.combo * 0.3);
         rows.forEach(row => {
             const firstColor = this.grid[row].find(c => c);
             const color = COLORS[firstColor] || COLORS.I;
-            this.particles.emitLine(row, color.fill);
+            const particleCount = Math.floor(4 * comboMultiplier);
+            const sparkCount = Math.floor(2 * comboMultiplier);
+            for (let col = 0; col < COLS; col++) {
+                this.particles.emit(col * CELL + CELL/2, (row - HIDDEN_ROWS) * CELL + CELL/2, color.fill, particleCount);
+                this.particles.emit(col * CELL + CELL/2, (row - HIDDEN_ROWS) * CELL + CELL/2, '#fff', sparkCount, 'spark');
+            }
         });
         rows.sort((a, b) => a - b);
         for (const row of rows.reverse()) this.grid.splice(row, 1);
         while (this.grid.length < TOTAL_ROWS) this.grid.unshift(Array(COLS).fill(null));
+
+        // Perfect Clear check
+        if (this._isGridEmpty()) {
+            this.score += PERFECT_CLEAR_BONUS * this.level;
+            this.audio.play('perfectClear');
+            this.showScorePopup('PERFECT CLEAR!', '#ffe600');
+            this.screenShake = 15; this.screenShakeIntensity = 8;
+            this.confetti.burst(100);
+            this.haptic(80);
+            this._unlockAchievement('perfectClear');
+        }
     }
 
+    /** Calculate and apply score from cleared lines, combos, T-spins, and back-to-back. */
     processScoring(clearedRows) {
         const numLines = clearedRows.length;
         if (numLines === 0) { this.combo = -1; this.updateComboDisplay(); return; }
@@ -1024,27 +1545,42 @@ class NeonBlocks {
         }
 
         if ((isTetris || isTspin) && this.backToBack) {
+            this.backToBackCount++;
             points = Math.floor(points * 1.5);
             this.showScorePopup('BACK-TO-BACK!', '#ffe600');
+        } else if (!(isTetris || isTspin)) {
+            this.backToBackCount = 0;
         }
         this.backToBack = isTetris || isTspin;
 
         if (this.combo > 0) {
             points += COMBO_BONUS * this.combo * this.level;
             this.showScorePopup(`${this.combo}x COMBO`, '#ff6a00');
+
+            // Escalating combo intensity: more shake + haptic as combo grows
+            const comboShake = Math.min(10, 3 + this.combo);
+            const comboIntensity = Math.min(6, 2 + this.combo * 0.5);
+            if (comboShake > this.screenShake) {
+                this.screenShake = comboShake;
+                this.screenShakeIntensity = comboIntensity;
+            }
+            this.haptic(Math.min(80, 10 + this.combo * 8));
         }
+
+        // Check achievements
+        this._checkAchievements(numLines, isTetris, isTspin);
 
         points *= this.level;
         this.score += points;
         this.lines += numLines;
 
         // Sprint check
-        if (this.gameMode === 'sprint' && this.lines >= this.sprintTarget) {
+        if (this.gameMode === 'sprint' && this.lines >= SPRINT_TARGET) {
             this.gameOver(true);
             return;
         }
 
-        const newLevel = Math.floor(this.lines / 10) + 1;
+        const newLevel = Math.floor(this.lines / LINES_PER_LEVEL) + 1;
         if (newLevel > this.level) {
             this.level = newLevel;
             this.audio.play('levelup');
@@ -1056,8 +1592,88 @@ class NeonBlocks {
         this.updateComboDisplay();
     }
 
+    /** Check if the grid is completely empty (Perfect Clear). */
+    _isGridEmpty() {
+        for (let row = 0; row < TOTAL_ROWS; row++) {
+            if (this.grid[row].some(c => c !== null)) return false;
+        }
+        return true;
+    }
+
+    /** Unlock an achievement and show a toast. */
+    _unlockAchievement(id) {
+        if (this.unlockedAchievements.has(id)) return;
+        const achievement = ACHIEVEMENTS[id];
+        if (!achievement) return;
+        this.unlockedAchievements.add(id);
+        this.audio.play('achievement');
+        this._achievementQueue.push(achievement);
+        this._showNextAchievement();
+    }
+
+    _showNextAchievement() {
+        if (this._achievementVisible || this._achievementQueue.length === 0) return;
+        this._achievementVisible = true;
+        this._ensureAchievementContainer();
+
+        const achievement = this._achievementQueue.shift();
+        const toast = document.createElement('div');
+        toast.style.cssText = 'background:linear-gradient(135deg,rgba(0,0,0,0.9),rgba(30,0,60,0.9));border:1px solid rgba(255,230,0,0.6);border-radius:12px;padding:10px 20px;color:#fff;font-family:inherit;font-size:14px;display:flex;align-items:center;gap:10px;box-shadow:0 0 20px rgba(255,230,0,0.3);animation:achievementIn 0.4s ease-out;white-space:nowrap;';
+        toast.innerHTML = '';
+
+        const icon = document.createElement('span');
+        icon.style.fontSize = '24px';
+        icon.textContent = achievement.icon;
+
+        const textDiv = document.createElement('div');
+        const titleEl = document.createElement('div');
+        titleEl.style.cssText = 'font-weight:bold;color:#ffe600;font-size:13px;letter-spacing:1px;';
+        titleEl.textContent = achievement.label;
+        const descEl = document.createElement('div');
+        descEl.style.cssText = 'font-size:11px;color:rgba(255,255,255,0.7);';
+        descEl.textContent = achievement.desc;
+        textDiv.appendChild(titleEl);
+        textDiv.appendChild(descEl);
+
+        toast.appendChild(icon);
+        toast.appendChild(textDiv);
+        this._achievementContainer.appendChild(toast);
+
+        setTimeout(() => {
+            toast.style.transition = 'opacity 0.5s, transform 0.5s';
+            toast.style.opacity = '0';
+            toast.style.transform = 'translateY(-20px)';
+            setTimeout(() => {
+                toast.remove();
+                this._achievementVisible = false;
+                this._showNextAchievement();
+            }, 500);
+        }, 2500);
+    }
+
+    /** Check and trigger achievements based on current game state. */
+    _checkAchievements(numLines, isTetris, isTspin) {
+        if (numLines > 0 && this.lines - numLines === 0) this._unlockAchievement('firstClear');
+        if (isTetris && this.tetrisCount === 1) this._unlockAchievement('firstTetris');
+        if (isTspin && this.tspinCount === 1) this._unlockAchievement('firstTspin');
+        if (this.combo >= 5) this._unlockAchievement('combo5');
+        if (this.combo >= 10) this._unlockAchievement('combo10');
+        if (this.level >= 5) this._unlockAchievement('level5');
+        if (this.level >= 10) this._unlockAchievement('level10');
+        if (this.level >= 15) this._unlockAchievement('level15');
+        if (this.score >= 50000) this._unlockAchievement('score50k');
+        if (this.score >= 100000) this._unlockAchievement('score100k');
+        if (this.backToBackCount >= 3) this._unlockAchievement('backToBack3');
+    }
+
+    /** Get the current level's color theme. */
+    _getLevelTheme() {
+        const index = Math.min(Math.floor((this.level - 1) / 4), LEVEL_THEMES.length - 1);
+        return LEVEL_THEMES[index];
+    }
+
     showScorePopup(text, color) {
-        const container = document.getElementById('game-container');
+        const container = this.dom.gameContainer;
         const el = document.createElement('div');
         el.className = 'score-popup'; el.textContent = text; el.style.color = color;
         el.style.left = (20 + Math.random() * 60) + '%';
@@ -1067,17 +1683,17 @@ class NeonBlocks {
         setTimeout(() => el.remove(), 1200);
     }
 
-    // --- Haptic Feedback ---
+    /** Trigger haptic feedback on supported devices. */
     haptic(ms = 10) {
         if (this.settingsManager.get('haptic') && navigator.vibrate) {
-            try { navigator.vibrate(ms); } catch(e) {}
+            try { navigator.vibrate(ms); } catch(_) { /* vibration not available */ }
         }
     }
 
     // --- Countdown ---
     startCountdown(callback) {
-        const display = document.getElementById('countdown-display');
-        let count = 3;
+        const display = this.dom.countdownDisplay;
+        let count = COUNTDOWN_START;
         display.classList.add('visible');
 
         const tick = () => {
@@ -1101,7 +1717,7 @@ class NeonBlocks {
         tick();
     }
 
-    // --- Game Over ---
+    /** End the current game, save scores, and show game-over overlay. */
     gameOver(isWin = false) {
         this.gameState = 'gameover';
         this.audio.stopMusic();
@@ -1124,41 +1740,37 @@ class NeonBlocks {
         localStorage.setItem('neonblocks_scores_v2', JSON.stringify(this.highScores));
         this.updateHighScoreDisplay();
 
-        document.getElementById('final-score').textContent = this.score.toLocaleString();
-        document.getElementById('final-level').textContent = this.level;
-        document.getElementById('final-lines').textContent = this.lines;
-        document.getElementById('final-tspins').textContent = this.tspinCount;
-        document.getElementById('final-tetrises').textContent = this.tetrisCount;
-        document.getElementById('final-combo').textContent = this.maxCombo;
+        this.dom.finalScore.textContent = this.score.toLocaleString();
+        this.dom.finalLevel.textContent = this.level;
+        this.dom.finalLines.textContent = this.lines;
+        this.dom.finalTspins.textContent = this.tspinCount;
+        this.dom.finalTetrises.textContent = this.tetrisCount;
+        this.dom.finalCombo.textContent = this.maxCombo;
 
         // Show time for sprint/ultra
         if (this.gameMode !== 'classic') {
-            document.getElementById('final-time-label').style.display = '';
-            document.getElementById('final-time').style.display = '';
+            this.dom.finalTimeLabel.style.display = '';
+            this.dom.finalTime.style.display = '';
             const secs = Math.floor(elapsed / 1000);
             const ms = elapsed % 1000;
-            document.getElementById('final-time').textContent = `${Math.floor(secs/60)}:${(secs%60).toString().padStart(2,'0')}.${ms.toString().padStart(3,'0').slice(0,2)}`;
+            this.dom.finalTime.textContent = `${Math.floor(secs/60)}:${(secs%60).toString().padStart(2,'0')}.${ms.toString().padStart(3,'0').slice(0,2)}`;
         } else {
-            document.getElementById('final-time-label').style.display = 'none';
-            document.getElementById('final-time').style.display = 'none';
+            this.dom.finalTimeLabel.style.display = 'none';
+            this.dom.finalTime.style.display = 'none';
         }
 
-        const hsMsg = document.getElementById('new-highscore-msg');
         if (isNewHighscore && this.score > 0) {
-            hsMsg.style.display = 'block';
+            this.dom.newHighscoreMsg.style.display = 'block';
             this.confetti.burst(80);
         } else {
-            hsMsg.style.display = 'none';
+            this.dom.newHighscoreMsg.style.display = 'none';
         }
 
         // Sprint win message
-        if (isWin && this.gameMode === 'sprint') {
-            document.getElementById('gameover-overlay').querySelector('h2').textContent = 'GESCHAFFT!';
-        } else {
-            document.getElementById('gameover-overlay').querySelector('h2').textContent = 'GAME OVER';
-        }
+        const heading = this.dom.gameoverOverlay.querySelector('h2');
+        heading.textContent = (isWin && this.gameMode === 'sprint') ? 'GESCHAFFT!' : 'GAME OVER';
 
-        document.getElementById('gameover-overlay').classList.remove('hidden');
+        this.dom.gameoverOverlay.classList.remove('hidden');
     }
 
     // --- Share ---
@@ -1170,30 +1782,45 @@ class NeonBlocks {
             navigator.share({ title: 'NEON BLOCKS Score', text }).catch(() => {});
         } else if (navigator.clipboard) {
             navigator.clipboard.writeText(text).then(() => {
-                const btn = document.getElementById('share-btn');
-                btn.textContent = '\u2713 KOPIERT!';
-                setTimeout(() => { btn.innerHTML = '&#128279; SCORE TEILEN'; }, 2000);
+                this.dom.shareBtn.textContent = '\u2713 KOPIERT!';
+                setTimeout(() => { this.dom.shareBtn.textContent = '\u{1F517} SCORE TEILEN'; }, 2000);
             }).catch(() => {});
         }
     }
 
+    /** Sanitize a raw player name input into a valid display name. */
+    _sanitizePlayerName(raw) {
+        const trimmed = (raw || '').trim().toUpperCase().slice(0, MAX_PLAYER_NAME_LENGTH);
+        return trimmed || DEFAULT_PLAYER_NAME;
+    }
+
     // --- Start / Restart ---
     startGame() {
-        const nameInput = document.getElementById('player-name-input');
-        this.playerName = (nameInput.value || '').trim().toUpperCase().slice(0, 10) || 'ANONYM';
+        this.playerName = this._sanitizePlayerName(this.dom.playerNameInput.value);
         localStorage.setItem('neonblocks_player', this.playerName);
-        document.getElementById('player-name-display').textContent = this.playerName;
+        this.dom.playerNameDisplay.textContent = this.playerName;
+
+        if (this.gameMode === 'vs') {
+            this.p2Name = this._sanitizePlayerName(this.dom.p2NameInput.value);
+        }
 
         this.audio.init();
 
-        document.getElementById('start-overlay').classList.add('hidden');
-        document.getElementById('gameover-overlay').classList.add('hidden');
-        document.getElementById('pause-overlay').classList.add('hidden');
+        this.dom.startOverlay.classList.add('hidden');
+        this.dom.gameoverOverlay.classList.add('hidden');
+        this.dom.pauseOverlay.classList.add('hidden');
+        if (this.dom.vsResultOverlay) this.dom.vsResultOverlay.classList.add('hidden');
 
         // Countdown then start
         this.gameState = 'countdown';
         this.startCountdown(() => {
-            this._initGameState();
+            if (this.gameMode === 'vs') {
+                this._initVsMode();
+            } else {
+                this.vsBoards = null;
+                this.dom.vsHud.style.display = 'none';
+                this._initGameState();
+            }
             this.gameState = 'playing';
             this.lastDrop = performance.now();
             this.modeStartTime = Date.now();
@@ -1216,37 +1843,352 @@ class NeonBlocks {
         this.screenShake = 0; this.levelUpFlash = 0;
         this.randomizer = new BagRandomizer();
         this.particles = new ParticleSystem();
+        this.displayedScore = 0;
+        this.impactFlash = 0;
+        this.impactFlashRows = [];
+        this.unlockedAchievements = new Set();
+        this._achievementQueue = [];
+        this._achievementVisible = false;
+        this.backToBackCount = 0;
+        this._currentThemeIndex = -1;
+
+        // Reset dirty flags so UI updates on first frame
+        this._prevUI = { score: -1, level: -1, lines: -1, tspins: -1, tetrises: -1, maxCombo: -1 };
 
         for (let i = 0; i < 5; i++) this.nextPieces.push(this.randomizer.next());
         this.spawnPiece();
         this.updateUI();
         this.updateHoldDisplay();
         this.updateComboDisplay();
-        document.getElementById('tspin-count').textContent = '0';
-        document.getElementById('tetris-count').textContent = '0';
-        document.getElementById('max-combo').textContent = '0';
-        document.getElementById('mode-timer').textContent = '';
+        this.dom.tspinCount.textContent = '0';
+        this.dom.tetrisCount.textContent = '0';
+        this.dom.maxCombo.textContent = '0';
+        this.dom.modeTimer.textContent = '';
+    }
+
+    /** Initialize VS (1v1) mode with two game boards. */
+    _initVsMode() {
+        const b1 = new GameBoard(1);
+        const b2 = new GameBoard(2);
+        b1.init();
+        b2.init();
+        this.vsBoards = [b1, b2];
+
+        // Resize canvas for two boards
+        this.canvas.width = (COLS * 2 + VS_GAP) * CELL;
+        this.canvas.height = ROWS * CELL;
+        this.confettiCanvas.width = this.canvas.width;
+        this.confettiCanvas.height = this.canvas.height;
+
+        // Show VS HUD
+        this.dom.vsHud.style.display = '';
+        this.dom.vsP1Name.textContent = this.playerName;
+        this.dom.vsP2Name.textContent = this.p2Name;
+        this.dom.vsP1Score.textContent = '0';
+        this.dom.vsP2Score.textContent = '0';
+        this.dom.vsP1Lines.textContent = '0 Lines';
+        this.dom.vsP2Lines.textContent = '0 Lines';
+        this.dom.vsP1Attack.textContent = '';
+        this.dom.vsP2Attack.textContent = '';
+
+        // Hide single-player stats bar
+        if (this.dom.statsBar) this.dom.statsBar.style.display = 'none';
+    }
+
+    /** Update VS mode game state for one tick. */
+    _updateVsBoard(board, time, dt) {
+        if (!board.alive) return;
+        const interval = getDropInterval(board.level);
+        if (time - board.lastDrop >= interval) {
+            if (!board.movePiece(0, 1)) {
+                board.lockDelay += interval;
+                if (board.lockDelay >= LOCK_DELAY_MS) this._vsLockPiece(board);
+            } else { board.lockDelay = 0; }
+            board.lastDrop = time;
+        }
+        if (board.currentPiece && !board.isValid(board.currentPiece, board.currentPiece.shape, board.currentPiece.x, board.currentPiece.y + 1)) {
+            board.lockDelay += dt;
+            if (board.lockDelay >= LOCK_DELAY_MS) this._vsLockPiece(board);
+        }
+        if (board.lineClearAnim) {
+            board.lineClearAnim.update();
+            if (board.lineClearAnim.done) {
+                board.clearLines(board.lineClearAnim.rows);
+                board.lineClearAnim = null;
+                // Apply pending garbage after own lines are cleared
+                if (board.pendingGarbage > 0) {
+                    board.addGarbage(board.pendingGarbage);
+                    board.pendingGarbage = 0;
+                }
+                board.spawnPiece();
+                if (!board.alive) this._vsGameOver(board);
+            }
+        }
+        if (board.screenShake > 0) board.screenShake--;
+        if (board.levelUpFlash > 0) board.levelUpFlash--;
+        if (board.impactFlash > 0) board.impactFlash--;
+    }
+
+    /** Lock a piece on a VS board and handle attacks. */
+    _vsLockPiece(board) {
+        const result = board.lockPiece();
+        if (result.cleared > 0) {
+            this.audio.play(result.isTetris ? 'tetris' : result.isTspin ? 'tspin' : 'clear');
+            board.lineClearAnim = new LineClearAnimation(result.rows);
+
+            // Send attack to opponent
+            if (result.attack > 0) {
+                const opponent = this.vsBoards[board.playerNum === 1 ? 1 : 0];
+                opponent.pendingGarbage += result.attack;
+                // Show attack indicator
+                const attackEl = board.playerNum === 1 ? this.dom.vsP1Attack : this.dom.vsP2Attack;
+                attackEl.textContent = `+${result.attack}`;
+                setTimeout(() => { attackEl.textContent = ''; }, 800);
+            }
+
+            if (result.isEmpty) {
+                this.audio.play('perfectClear');
+                this.confetti.burst(60);
+            }
+        } else {
+            this.audio.play('lock');
+            // Apply pending garbage when player doesn't clear lines
+            if (board.pendingGarbage > 0) {
+                board.addGarbage(board.pendingGarbage);
+                board.pendingGarbage = 0;
+            }
+            board.spawnPiece();
+            if (!board.alive) this._vsGameOver(board);
+        }
+    }
+
+    /** Handle VS DAS for a specific board. */
+    _vsHandleDAS(board, now, leftKey, rightKey, downAction) {
+        [leftKey, rightKey].forEach(key => {
+            if (board.keys[key] && board.dasTimer[key]) {
+                const elapsed = now - board.dasTimer[key];
+                if (elapsed >= DEFAULT_DAS) {
+                    if (!board.arrTimer[key] || now - board.arrTimer[key] >= DEFAULT_ARR) {
+                        board.movePiece(key === leftKey ? -1 : 1, 0);
+                        board.arrTimer[key] = now;
+                    }
+                }
+            }
+        });
+        if (downAction && board.keys[downAction]) board.softDrop();
+    }
+
+    /** Handle game over for a VS board. */
+    _vsGameOver(losingBoard) {
+        this.gameState = 'gameover';
+        this.audio.stopMusic();
+        const winner = this.vsBoards[losingBoard.playerNum === 1 ? 1 : 0];
+        const winnerName = losingBoard.playerNum === 1 ? this.p2Name : this.playerName;
+        const loserName = losingBoard.playerNum === 1 ? this.playerName : this.p2Name;
+
+        this.dom.vsWinnerText.textContent = `${winnerName} GEWINNT!`;
+        this.dom.vsWinnerText.style.color = losingBoard.playerNum === 1 ? '#ff00aa' : '#00f0ff';
+        this.dom.vsResultDetail.textContent = `${loserName} hat verloren`;
+
+        // Build stats
+        const statsEl = this.dom.vsStats;
+        while (statsEl.firstChild) statsEl.removeChild(statsEl.firstChild);
+        const b1 = this.vsBoards[0], b2 = this.vsBoards[1];
+        const rows = [
+            ['', this.playerName, this.p2Name],
+            ['Score', b1.score.toLocaleString(), b2.score.toLocaleString()],
+            ['Lines', b1.lines, b2.lines],
+            ['Level', b1.level, b2.level],
+            ['Tetrisse', b1.tetrisCount, b2.tetrisCount],
+            ['T-Spins', b1.tspinCount, b2.tspinCount],
+            ['Max Combo', b1.maxCombo, b2.maxCombo],
+        ];
+        rows.forEach(([label, v1, v2], i) => {
+            const lbl = document.createElement('span');
+            lbl.className = 'stat-label';
+            lbl.textContent = label;
+            lbl.style.gridColumn = '1';
+            const val1 = document.createElement('span');
+            val1.className = 'stat-value';
+            val1.textContent = v1;
+            val1.style.color = i === 0 ? '#00f0ff' : '#fff';
+            val1.style.gridColumn = '2';
+            const val2 = document.createElement('span');
+            val2.className = 'stat-value';
+            val2.textContent = v2;
+            val2.style.color = i === 0 ? '#ff00aa' : '#fff';
+            val2.style.gridColumn = '3';
+            statsEl.appendChild(lbl);
+            statsEl.appendChild(val1);
+            statsEl.appendChild(val2);
+        });
+        statsEl.style.gridTemplateColumns = '1fr 1fr 1fr';
+        statsEl.style.display = 'grid';
+        statsEl.style.gap = '4px 10px';
+
+        this.confetti.burst(80);
+        this.audio.play('gameover');
+        this.dom.vsResultOverlay.classList.remove('hidden');
+    }
+
+    /** Update VS HUD display. */
+    _updateVsHud() {
+        if (!this.vsBoards) return;
+        const [b1, b2] = this.vsBoards;
+        this.dom.vsP1Score.textContent = b1.score.toLocaleString();
+        this.dom.vsP2Score.textContent = b2.score.toLocaleString();
+        this.dom.vsP1Lines.textContent = b1.lines + ' Lines';
+        this.dom.vsP2Lines.textContent = b2.lines + ' Lines';
+    }
+
+    /** Render a single game board at a given x-offset on the canvas. */
+    _renderVsBoard(board, xOffset, playerColor) {
+        const ctx = this.ctx;
+        ctx.save();
+        ctx.translate(xOffset, 0);
+
+        // Screen shake
+        if (board.screenShake > 0) {
+            ctx.translate((Math.random()-0.5)*board.screenShakeIntensity, (Math.random()-0.5)*board.screenShakeIntensity);
+        }
+
+        // Board background
+        ctx.fillStyle = 'rgba(5, 5, 15, 0.95)';
+        ctx.fillRect(0, 0, COLS * CELL, ROWS * CELL);
+
+        // Level-up flash
+        if (board.levelUpFlash > 0) {
+            ctx.fillStyle = `rgba(0, 255, 106, ${(board.levelUpFlash / 20) * 0.2})`;
+            ctx.fillRect(0, 0, COLS * CELL, ROWS * CELL);
+        }
+
+        // Impact flash
+        if (board.impactFlash > 0) {
+            const flashAlpha = (board.impactFlash / 8) * 0.6;
+            board.impactFlashRows.forEach(row => {
+                if (row >= 0 && row < ROWS) {
+                    ctx.fillStyle = `rgba(255,255,255,${flashAlpha})`;
+                    ctx.fillRect(0, row * CELL, COLS * CELL, CELL);
+                }
+            });
+        }
+
+        // Grid lines
+        ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+        ctx.lineWidth = 0.5;
+        for (let x = 0; x <= COLS; x++) { ctx.beginPath(); ctx.moveTo(x*CELL, 0); ctx.lineTo(x*CELL, ROWS*CELL); ctx.stroke(); }
+        for (let y = 0; y <= ROWS; y++) { ctx.beginPath(); ctx.moveTo(0, y*CELL); ctx.lineTo(COLS*CELL, y*CELL); ctx.stroke(); }
+
+        // Danger zone
+        const danger = board.getDangerLevel();
+        if (danger > 0) {
+            board.dangerPulse += 0.05;
+            const pulseAlpha = (Math.sin(board.dangerPulse * 3) + 1) * 0.5;
+            const dColor = danger === 2 ? `rgba(255,0,68,${pulseAlpha * 0.15})` : `rgba(255,106,0,${pulseAlpha * 0.08})`;
+            const dHeight = danger === 2 ? ROWS * CELL * 0.3 : ROWS * CELL * 0.15;
+            const dGrad = ctx.createLinearGradient(0, 0, 0, dHeight);
+            dGrad.addColorStop(0, dColor); dGrad.addColorStop(1, 'transparent');
+            ctx.fillStyle = dGrad; ctx.fillRect(0, 0, COLS * CELL, dHeight);
+        }
+
+        // Line clear flash
+        if (board.lineClearAnim) {
+            const flash = board.lineClearAnim.getFlash();
+            if (flash > 0) {
+                board.lineClearAnim.rows.forEach(row => {
+                    ctx.fillStyle = `rgba(255,255,255,${flash})`;
+                    ctx.fillRect(0, (row - HIDDEN_ROWS) * CELL, COLS * CELL, CELL);
+                });
+            }
+        }
+
+        // Placed blocks
+        for (let row = HIDDEN_ROWS; row < TOTAL_ROWS; row++) {
+            if (!board.grid[row]) continue;
+            for (let col = 0; col < COLS; col++) {
+                const cell = board.grid[row][col];
+                if (cell) {
+                    let alpha = 1;
+                    if (board.lineClearAnim && board.lineClearAnim.rows.includes(row)) alpha = board.lineClearAnim.getAlpha();
+                    this.drawCell(ctx, col * CELL, (row - HIDDEN_ROWS) * CELL, CELL, COLORS[cell], alpha);
+                }
+            }
+        }
+
+        // Ghost + current piece
+        const p = board.currentPiece;
+        if (p) {
+            if (board.spawnAlpha < 1) board.spawnAlpha = Math.min(1, board.spawnAlpha + SPAWN_FADE_SPEED);
+            const color = COLORS[p.type];
+
+            // Ghost
+            if (this.settingsManager.get('ghost')) {
+                const ghostY = board.getGhostY();
+                if (ghostY !== p.y) {
+                    for (let row = 0; row < p.shape.length; row++) {
+                        for (let col = 0; col < p.shape[row].length; col++) {
+                            if (p.shape[row][col]) {
+                                const drawY = (ghostY + row - HIDDEN_ROWS) * CELL;
+                                const drawX = (p.x + col) * CELL;
+                                if (drawY >= 0) {
+                                    ctx.save(); ctx.globalAlpha = 0.18;
+                                    ctx.fillStyle = color.fill;
+                                    ctx.fillRect(drawX + 2, drawY + 2, CELL - 4, CELL - 4);
+                                    ctx.globalAlpha = 0.35; ctx.strokeStyle = color.fill;
+                                    ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
+                                    ctx.strokeRect(drawX + 2, drawY + 2, CELL - 4, CELL - 4);
+                                    ctx.setLineDash([]); ctx.restore();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Active piece
+            for (let row = 0; row < p.shape.length; row++) {
+                for (let col = 0; col < p.shape[row].length; col++) {
+                    if (p.shape[row][col]) {
+                        const drawY = (p.y + row - HIDDEN_ROWS) * CELL;
+                        const drawX = (p.x + col) * CELL;
+                        if (drawY >= -CELL) this.drawCell(ctx, drawX, drawY, CELL, color, board.spawnAlpha);
+                    }
+                }
+            }
+        }
+
+        // Pending garbage indicator (red bar on left side)
+        if (board.pendingGarbage > 0) {
+            const garbageHeight = Math.min(board.pendingGarbage, ROWS) * CELL;
+            ctx.fillStyle = 'rgba(255,0,68,0.6)';
+            ctx.fillRect(0, ROWS * CELL - garbageHeight, 3, garbageHeight);
+        }
+
+        // Border
+        ctx.strokeStyle = playerColor;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(0, 0, COLS * CELL, ROWS * CELL);
+
+        ctx.restore();
     }
 
     togglePause() {
         if (this.gameState === 'playing') {
             this.gameState = 'paused';
             this.audio.stopMusic();
-            document.getElementById('pause-overlay').classList.remove('hidden');
+            this.dom.pauseOverlay.classList.remove('hidden');
         } else if (this.gameState === 'paused') {
             this.gameState = 'playing';
             this.lastDrop = performance.now();
             this.audio.startMusic();
-            document.getElementById('pause-overlay').classList.add('hidden');
+            this.dom.pauseOverlay.classList.add('hidden');
         }
     }
 
     // --- Controls ---
     setupControls() {
-        const nameInput = document.getElementById('player-name-input');
-        const startBtn = document.getElementById('start-btn');
-        const resumeBtn = document.getElementById('resume-btn');
-        const shareBtn = document.getElementById('share-btn');
+        const nameInput = this.dom.playerNameInput;
+        const startBtn = this.dom.startBtn;
 
         const updateStartBtn = () => { startBtn.disabled = nameInput.value.trim().length === 0; };
         nameInput.addEventListener('input', updateStartBtn);
@@ -1276,6 +2218,38 @@ class NeonBlocks {
 
             if (this.gameState !== 'playing') return;
 
+            // VS mode controls
+            if (this.gameMode === 'vs' && this.vsBoards) {
+                e.preventDefault();
+                const [b1, b2] = this.vsBoards;
+                const key = e.key.toLowerCase();
+                const now = performance.now();
+
+                // Player 1: WASD + Q/E/Space
+                if (b1.alive) {
+                    if (key === 'a') { if (!b1.keys['a']) { b1.movePiece(-1, 0); b1.dasTimer['a'] = now; } b1.keys['a'] = true; }
+                    else if (key === 'd') { if (!b1.keys['d']) { b1.movePiece(1, 0); b1.dasTimer['d'] = now; } b1.keys['d'] = true; }
+                    else if (key === 's') { b1.keys['s'] = true; b1.softDrop(); }
+                    else if (key === 'w') { b1.rotatePiece(1); this.audio.play('rotate'); }
+                    else if (key === 'e') { b1.rotatePiece(2); this.audio.play('rotate'); }
+                    else if (key === 'q') { if (b1.holdCurrentPiece()) this.audio.play('hold'); }
+                    else if (e.key === ' ') { b1.hardDrop(); this._vsLockPiece(b1); this.audio.play('drop'); this.audio.play('impact'); }
+                }
+
+                // Player 2: Arrows + Shift/Enter/Slash
+                if (b2.alive) {
+                    if (e.key === 'ArrowLeft') { if (!b2.keys['left']) { b2.movePiece(-1, 0); b2.dasTimer['left'] = now; } b2.keys['left'] = true; }
+                    else if (e.key === 'ArrowRight') { if (!b2.keys['right']) { b2.movePiece(1, 0); b2.dasTimer['right'] = now; } b2.keys['right'] = true; }
+                    else if (e.key === 'ArrowDown') { b2.keys['down'] = true; b2.softDrop(); }
+                    else if (e.key === 'ArrowUp') { b2.rotatePiece(1); this.audio.play('rotate'); }
+                    else if (key === '/') { b2.rotatePiece(2); this.audio.play('rotate'); }
+                    else if (e.key === 'Shift') { if (b2.holdCurrentPiece()) this.audio.play('hold'); }
+                    else if (e.key === 'Enter') { b2.hardDrop(); this._vsLockPiece(b2); this.audio.play('drop'); this.audio.play('impact'); }
+                }
+                return;
+            }
+
+            // Single-player controls
             switch(e.key) {
                 case 'ArrowLeft':
                     e.preventDefault();
@@ -1301,6 +2275,18 @@ class NeonBlocks {
         });
 
         document.addEventListener('keyup', e => {
+            // VS mode key up
+            if (this.gameMode === 'vs' && this.vsBoards) {
+                const [b1, b2] = this.vsBoards;
+                const key = e.key.toLowerCase();
+                if (key === 'a' || key === 'd' || key === 's') b1.keys[key] = false;
+                if (key === 'a' || key === 'd') delete b1.dasTimer[key];
+                if (e.key === 'ArrowLeft') { b2.keys['left'] = false; delete b2.dasTimer['left']; }
+                if (e.key === 'ArrowRight') { b2.keys['right'] = false; delete b2.dasTimer['right']; }
+                if (e.key === 'ArrowDown') b2.keys['down'] = false;
+                return;
+            }
+
             this.keys[e.key] = false;
             if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
                 delete this.dasTimer[e.key];
@@ -1310,9 +2296,26 @@ class NeonBlocks {
         });
 
         startBtn.addEventListener('click', () => { if (nameInput.value.trim().length > 0) this.startGame(); });
-        document.getElementById('restart-btn').addEventListener('click', () => this.startGame());
-        resumeBtn.addEventListener('click', () => this.togglePause());
-        shareBtn.addEventListener('click', () => this.shareScore());
+        this.dom.restartBtn.addEventListener('click', () => this.startGame());
+        this.dom.resumeBtn.addEventListener('click', () => this.togglePause());
+        this.dom.shareBtn.addEventListener('click', () => this.shareScore());
+
+        // VS mode buttons
+        if (this.dom.vsRestartBtn) {
+            this.dom.vsRestartBtn.addEventListener('click', () => this.startGame());
+        }
+        if (this.dom.vsMenuBtn) {
+            this.dom.vsMenuBtn.addEventListener('click', () => {
+                this.dom.vsResultOverlay.classList.add('hidden');
+                this.dom.vsHud.style.display = 'none';
+                this.dom.startOverlay.classList.remove('hidden');
+                this.gameState = 'start';
+                this.vsBoards = null;
+                // Restore canvas size
+                this.calculateCellSize();
+                if (this.dom.statsBar) this.dom.statsBar.style.display = '';
+            });
+        }
     }
 
     setupMobileControls() {
@@ -1433,81 +2436,129 @@ class NeonBlocks {
         if (this.keys['ArrowDown']) this.softDrop();
     }
 
-    // --- UI Updates ---
+    /** Update score/level/lines displays with smooth score animation. */
     updateUI() {
-        const scoreStr = this.score.toLocaleString();
-        document.getElementById('score-display').textContent = scoreStr;
-        document.getElementById('level-display').textContent = this.level;
-        document.getElementById('lines-display').textContent = this.lines;
-        document.getElementById('tspin-count').textContent = this.tspinCount;
-        document.getElementById('tetris-count').textContent = this.tetrisCount;
-        document.getElementById('max-combo').textContent = this.maxCombo;
+        const prev = this._prevUI;
 
-        // Mobile HUD
-        const hudScore = document.getElementById('hud-score');
-        const hudLevel = document.getElementById('hud-level');
-        const hudLines = document.getElementById('hud-lines');
-        if (hudScore) hudScore.textContent = scoreStr;
-        if (hudLevel) hudLevel.textContent = this.level;
-        if (hudLines) hudLines.textContent = this.lines;
+        // Smooth score counter animation (lerp toward actual score)
+        if (this.displayedScore !== this.score) {
+            const diff = this.score - this.displayedScore;
+            const step = Math.max(1, Math.ceil(Math.abs(diff) * SCORE_LERP_SPEED));
+            this.displayedScore = diff > 0
+                ? Math.min(this.score, this.displayedScore + step)
+                : Math.max(this.score, this.displayedScore - step);
+        }
+
+        if (prev.score !== this.displayedScore) {
+            prev.score = this.displayedScore;
+            const scoreStr = this.displayedScore.toLocaleString();
+            this.dom.scoreDisplay.textContent = scoreStr;
+            if (this.dom.hudScore) this.dom.hudScore.textContent = scoreStr;
+        }
+        if (prev.level !== this.level) {
+            prev.level = this.level;
+            this.dom.levelDisplay.textContent = this.level;
+            if (this.dom.hudLevel) this.dom.hudLevel.textContent = this.level;
+        }
+        if (prev.lines !== this.lines) {
+            prev.lines = this.lines;
+            this.dom.linesDisplay.textContent = this.lines;
+            if (this.dom.hudLines) this.dom.hudLines.textContent = this.lines;
+        }
+        if (prev.tspins !== this.tspinCount) {
+            prev.tspins = this.tspinCount;
+            this.dom.tspinCount.textContent = this.tspinCount;
+        }
+        if (prev.tetrises !== this.tetrisCount) {
+            prev.tetrises = this.tetrisCount;
+            this.dom.tetrisCount.textContent = this.tetrisCount;
+        }
+        if (prev.maxCombo !== this.maxCombo) {
+            prev.maxCombo = this.maxCombo;
+            this.dom.maxCombo.textContent = this.maxCombo;
+        }
     }
 
     updateComboDisplay() {
-        const el = document.getElementById('combo-display');
-        el.textContent = this.combo > 0 ? `${this.combo}x COMBO` : '';
+        this.dom.comboDisplay.textContent = this.combo > 0 ? `${this.combo}x COMBO` : '';
+    }
+
+    /** Format milliseconds as M:SS.cc timer string. */
+    _formatTimer(ms) {
+        const secs = Math.floor(ms / 1000);
+        const centisecs = Math.floor((ms % 1000) / 10);
+        return `${Math.floor(secs/60)}:${(secs%60).toString().padStart(2,'0')}.${centisecs.toString().padStart(2,'0')}`;
     }
 
     updateModeTimer() {
         if (this.gameState !== 'playing') return;
         const elapsed = Date.now() - this.modeStartTime;
-        const timerEl = document.getElementById('mode-timer');
+        const timerEl = this.dom.modeTimer;
 
         if (this.gameMode === 'sprint') {
-            const secs = Math.floor(elapsed / 1000);
-            const ms = Math.floor((elapsed % 1000) / 10);
-            timerEl.textContent = `${Math.floor(secs/60)}:${(secs%60).toString().padStart(2,'0')}.${ms.toString().padStart(2,'0')}`;
+            timerEl.textContent = this._formatTimer(elapsed);
             timerEl.style.color = '#00ff6a';
         } else if (this.gameMode === 'ultra') {
-            const remaining = Math.max(0, this.ultraDuration - elapsed);
+            const remaining = Math.max(0, ULTRA_DURATION_MS - elapsed);
             if (remaining <= 0) { this.gameOver(); return; }
-            const secs = Math.floor(remaining / 1000);
-            const ms = Math.floor((remaining % 1000) / 10);
-            timerEl.textContent = `${Math.floor(secs/60)}:${(secs%60).toString().padStart(2,'0')}.${ms.toString().padStart(2,'0')}`;
+            timerEl.textContent = this._formatTimer(remaining);
             timerEl.style.color = remaining < 10000 ? '#ff0044' : remaining < 30000 ? '#ffe600' : '#00ff6a';
         } else {
             timerEl.textContent = '';
         }
     }
 
+    /** Check if an entry is a valid high-score object (not null/array). */
+    _isScoreEntry(entry) {
+        return typeof entry === 'object' && entry !== null && !Array.isArray(entry);
+    }
+
     updateHighScoreDisplay() {
-        // Update both desktop and mobile leaderboards
-        const lists = [
-            document.getElementById('highscore-list'),
-            document.getElementById('mobile-highscore-list')
-        ];
+        const lists = [this.dom.highscoreList, this.dom.mobileHighscoreList];
 
         lists.forEach(list => {
             if (!list) return;
-            list.innerHTML = '';
+            // Clear all children safely (no innerHTML)
+            while (list.firstChild) list.removeChild(list.firstChild);
+
             if (this.highScores.length === 0) {
-                list.innerHTML = '<li><span style="color:rgba(255,255,255,0.3)">Noch keine Scores</span></li>';
+                const li = document.createElement('li');
+                const span = document.createElement('span');
+                span.style.color = 'rgba(255,255,255,0.3)';
+                span.textContent = 'Noch keine Scores';
+                li.appendChild(span);
+                list.appendChild(li);
                 return;
             }
             this.highScores.slice(0, 10).forEach((entry, i) => {
                 const li = document.createElement('li');
-                const name = typeof entry === 'object' ? entry.name : '???';
-                const score = typeof entry === 'object' ? entry.score : entry;
-                const level = typeof entry === 'object' ? (entry.level || '-') : '-';
-                const lines = typeof entry === 'object' ? (entry.lines || '-') : '-';
-                li.innerHTML = `<span class="hs-rank">#${i + 1}</span><span class="hs-name">${this.escapeHtml(name)}</span><span class="hs-score">${score.toLocaleString()}</span>`;
+                const isObj = this._isScoreEntry(entry);
+                const name = isObj ? entry.name : '???';
+                const score = isObj ? entry.score : entry;
+
+                const rankSpan = document.createElement('span');
+                rankSpan.className = 'hs-rank';
+                rankSpan.textContent = `#${i + 1}`;
+
+                const nameSpan = document.createElement('span');
+                nameSpan.className = 'hs-name';
+                nameSpan.textContent = name;
+
+                const scoreSpan = document.createElement('span');
+                scoreSpan.className = 'hs-score';
+                scoreSpan.textContent = score.toLocaleString();
+
+                li.appendChild(rankSpan);
+                li.appendChild(nameSpan);
+                li.appendChild(scoreSpan);
                 list.appendChild(li);
             });
         });
     }
 
     setupMobileLeaderboard() {
-        const toggle = document.getElementById('lb-toggle');
-        const lb = document.getElementById('mobile-leaderboard');
+        const toggle = this.dom.lbToggle;
+        const lb = this.dom.mobileLeaderboard;
         if (!toggle || !lb) return;
 
         const handleToggle = (e) => {
@@ -1517,12 +2568,6 @@ class NeonBlocks {
         };
         toggle.addEventListener('touchend', handleToggle, { passive: false });
         toggle.addEventListener('click', handleToggle);
-    }
-
-    escapeHtml(str) {
-        const div = document.createElement('div');
-        div.textContent = str;
-        return div.innerHTML;
     }
 
     // --- Preview Canvases ---
@@ -1661,7 +2706,7 @@ class NeonBlocks {
         const ctx = this.ctx, color = COLORS[p.type];
 
         // Spawn fade-in
-        if (this.spawnAlpha < 1) this.spawnAlpha = Math.min(1, this.spawnAlpha + 0.1);
+        if (this.spawnAlpha < 1) this.spawnAlpha = Math.min(1, this.spawnAlpha + SPAWN_FADE_SPEED);
 
         // Ghost piece
         if (this.settingsManager.get('ghost')) {
@@ -1703,45 +2748,55 @@ class NeonBlocks {
         }
     }
 
-    // --- Main Loop ---
+    /** Main game loop - handles physics, input, animation, and rendering. */
     loop(time) {
         const dt = time - this.lastTime;
         this.lastTime = time;
         this.drawBackground();
 
         if (this.gameState === 'playing') {
-            this.handleDAS(time);
-
-            const interval = getDropInterval(this.level);
-            if (time - this.lastDrop >= interval) {
-                if (!this.movePiece(0, 1)) {
-                    this.lockDelay += interval;
-                    if (this.lockDelay >= this.LOCK_DELAY) this.lockPiece();
-                } else { this.lockDelay = 0; }
-                this.lastDrop = time;
-            }
-
-            if (this.currentPiece && !this.isValid(this.currentPiece, this.currentPiece.shape, this.currentPiece.x, this.currentPiece.y + 1)) {
-                this.lockDelay += dt;
-                if (this.lockDelay >= this.LOCK_DELAY) this.lockPiece();
-            }
-
-            if (this.lineClearAnim) {
-                this.lineClearAnim.update();
-                if (this.lineClearAnim.done) {
-                    this.clearLines(this.lineClearAnim.rows);
-                    this.lineClearAnim = null;
-                    this.spawnPiece();
+            if (this.gameMode === 'vs' && this.vsBoards) {
+                // VS mode update
+                const [b1, b2] = this.vsBoards;
+                this._vsHandleDAS(b1, time, 'a', 'd', 's');
+                this._vsHandleDAS(b2, time, 'left', 'right', 'down');
+                this._updateVsBoard(b1, time, dt);
+                this._updateVsBoard(b2, time, dt);
+                this._updateVsHud();
+                // Danger-based music: use highest danger level
+                this.audio.setDangerLevel(Math.max(b1.getDangerLevel(), b2.getDangerLevel()));
+            } else {
+                // Single-player update
+                this.handleDAS(time);
+                const interval = getDropInterval(this.level);
+                if (time - this.lastDrop >= interval) {
+                    if (!this.movePiece(0, 1)) {
+                        this.lockDelay += interval;
+                        if (this.lockDelay >= LOCK_DELAY_MS) this.lockPiece();
+                    } else { this.lockDelay = 0; }
+                    this.lastDrop = time;
                 }
+                if (this.currentPiece && !this.isValid(this.currentPiece, this.currentPiece.shape, this.currentPiece.x, this.currentPiece.y + 1)) {
+                    this.lockDelay += dt;
+                    if (this.lockDelay >= LOCK_DELAY_MS) this.lockPiece();
+                }
+                if (this.lineClearAnim) {
+                    this.lineClearAnim.update();
+                    if (this.lineClearAnim.done) {
+                        this.clearLines(this.lineClearAnim.rows);
+                        this.lineClearAnim = null;
+                        this.spawnPiece();
+                    }
+                }
+                this.updateModeTimer();
+                this.audio.setDangerLevel(this.getDangerLevel());
+                this.updateUI();
             }
-
-            this.updateModeTimer();
-            // LIVE UI update every frame
-            this.updateUI();
         }
 
         if (this.screenShake > 0) this.screenShake--;
         if (this.levelUpFlash > 0) this.levelUpFlash--;
+        if (this.impactFlash > 0) this.impactFlash--;
         this.particles.update();
         this.confetti.update();
         this.render();
@@ -1751,6 +2806,31 @@ class NeonBlocks {
     render() {
         const ctx = this.ctx;
         ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+
+        // VS mode rendering
+        if (this.gameMode === 'vs' && this.vsBoards) {
+            const p2Offset = (COLS + VS_GAP) * CELL;
+
+            // Draw gap between boards
+            ctx.fillStyle = 'rgba(5, 5, 15, 0.95)';
+            ctx.fillRect(COLS * CELL, 0, VS_GAP * CELL, ROWS * CELL);
+
+            // Draw "VS" in the gap
+            ctx.save();
+            ctx.fillStyle = 'rgba(255,0,68,0.3)';
+            ctx.font = `bold ${Math.max(10, CELL)}px Orbitron, monospace`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('VS', COLS * CELL + (VS_GAP * CELL) / 2, ROWS * CELL / 2);
+            ctx.restore();
+
+            this._renderVsBoard(this.vsBoards[0], 0, 'rgba(0,240,255,0.3)');
+            this._renderVsBoard(this.vsBoards[1], p2Offset, 'rgba(255,0,170,0.3)');
+            this.confetti.update();
+            return;
+        }
+
+        // Single-player rendering
         ctx.save();
 
         if (this.screenShake > 0) {
@@ -1766,6 +2846,17 @@ class NeonBlocks {
             ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
         }
 
+        // Hard drop impact flash
+        if (this.impactFlash > 0) {
+            const flashAlpha = (this.impactFlash / 8) * 0.6;
+            this.impactFlashRows.forEach(row => {
+                if (row >= 0 && row < ROWS) {
+                    ctx.fillStyle = `rgba(255,255,255,${flashAlpha})`;
+                    ctx.fillRect(0, row * CELL, COLS * CELL, CELL);
+                }
+            });
+        }
+
         this.drawGrid();
 
         if (this.gameState === 'playing' || this.gameState === 'paused') {
@@ -1775,12 +2866,14 @@ class NeonBlocks {
         ctx.restore();
         this.particles.draw(ctx);
 
-        // Border glow
+        // Border glow - changes color with level theme
         ctx.save();
+        const theme = this._getLevelTheme();
+        const [tr, tg, tb] = theme.accent;
         const borderGrad = ctx.createLinearGradient(0, 0, 0, this.canvas.height);
-        borderGrad.addColorStop(0, 'rgba(0, 240, 255, 0.1)');
-        borderGrad.addColorStop(0.5, 'rgba(176, 0, 255, 0.05)');
-        borderGrad.addColorStop(1, 'rgba(255, 0, 170, 0.1)');
+        borderGrad.addColorStop(0, `rgba(${tr}, ${tg}, ${tb}, 0.15)`);
+        borderGrad.addColorStop(0.5, `rgba(${tr}, ${tg}, ${tb}, 0.05)`);
+        borderGrad.addColorStop(1, `rgba(${tr}, ${tg}, ${tb}, 0.15)`);
         ctx.strokeStyle = borderGrad;
         ctx.lineWidth = 2;
         ctx.strokeRect(0, 0, this.canvas.width, this.canvas.height);
