@@ -244,6 +244,55 @@
             letter-spacing: 2px;
             margin-bottom: 10px;
         }
+        .keybind-grid {
+            display: grid;
+            grid-template-columns: 1fr auto;
+            gap: 6px 10px;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        .keybind-label {
+            font-size: 11px;
+            color: rgba(255,255,255,0.6);
+        }
+        .keybind-btn {
+            font-family: 'Orbitron', monospace;
+            font-size: 11px;
+            color: var(--neon-cyan);
+            background: rgba(0,240,255,0.08);
+            border: 1px solid rgba(0,240,255,0.3);
+            border-radius: 6px;
+            padding: 6px 14px;
+            cursor: pointer;
+            min-width: 60px;
+            text-align: center;
+            transition: all 0.2s;
+        }
+        .keybind-btn:hover { background: rgba(0,240,255,0.15); }
+        .keybind-btn.listening {
+            background: rgba(255,0,100,0.15);
+            border-color: #ff0064;
+            color: #ff0064;
+            animation: keybind-pulse 1s infinite;
+        }
+        @keyframes keybind-pulse {
+            0%, 100% { box-shadow: 0 0 5px rgba(255,0,100,0.3); }
+            50% { box-shadow: 0 0 15px rgba(255,0,100,0.6); }
+        }
+        .keybind-reset-btn {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 9px;
+            color: rgba(255,255,255,0.4);
+            background: none;
+            border: 1px solid rgba(255,255,255,0.15);
+            border-radius: 4px;
+            padding: 5px 12px;
+            cursor: pointer;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+            transition: all 0.2s;
+        }
+        .keybind-reset-btn:hover { color: #ff0064; border-color: #ff0064; }
         .settings-stats {
             display: grid;
             grid-template-columns: 1fr auto;
@@ -578,6 +627,40 @@
         @keyframes newHsPulse {
             from { opacity: 0.6; transform: scale(1); }
             to { opacity: 1; transform: scale(1.05); }
+        }
+
+        .personal-best-msg {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 10px;
+            color: #00ff6a;
+            text-shadow: 0 0 10px rgba(0,255,106,0.5);
+            margin-bottom: 8px;
+            letter-spacing: 1px;
+        }
+        .gameover-records {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+            justify-content: center;
+            margin: 6px 0 10px;
+        }
+        .record-badge {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 8px;
+            padding: 3px 8px;
+            border-radius: 10px;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+        }
+        .record-badge.new-record {
+            background: rgba(0,255,106,0.15);
+            border: 1px solid rgba(0,255,106,0.4);
+            color: #00ff6a;
+        }
+        .record-badge.prev-record {
+            background: rgba(255,255,255,0.05);
+            border: 1px solid rgba(255,255,255,0.1);
+            color: rgba(255,255,255,0.4);
         }
 
         /* Share button */
@@ -1076,6 +1159,21 @@
         </div>
 
         <div class="settings-divider"></div>
+        <div class="settings-section-label">Key Bindings</div>
+
+        <div class="keybind-grid" id="keybind-grid">
+            <span class="keybind-label">Move Left</span><button class="keybind-btn" data-action="moveLeft">&larr;</button>
+            <span class="keybind-label">Move Right</span><button class="keybind-btn" data-action="moveRight">&rarr;</button>
+            <span class="keybind-label">Soft Drop</span><button class="keybind-btn" data-action="softDrop">&darr;</button>
+            <span class="keybind-label">Hard Drop</span><button class="keybind-btn" data-action="hardDrop">Space</button>
+            <span class="keybind-label">Rotate CW</span><button class="keybind-btn" data-action="rotateCW">&uarr;</button>
+            <span class="keybind-label">Rotate CCW</span><button class="keybind-btn" data-action="rotateCCW">Z</button>
+            <span class="keybind-label">Rotate 180</span><button class="keybind-btn" data-action="rotate180">A</button>
+            <span class="keybind-label">Hold</span><button class="keybind-btn" data-action="hold">C</button>
+        </div>
+        <button class="keybind-reset-btn" id="keybind-reset">Reset to Default</button>
+
+        <div class="settings-divider"></div>
         <div class="settings-section-label">Lifetime Stats</div>
 
         <div class="settings-stats" id="lifetime-stats">
@@ -1236,6 +1334,7 @@
             <div class="overlay hidden" id="gameover-overlay" role="dialog" aria-label="Spiel vorbei">
                 <h2>GAME OVER</h2>
                 <div id="new-highscore-msg" class="new-highscore" style="display:none">&#9733; NEUER HIGHSCORE! &#9733;</div>
+                <div id="personal-best-msg" class="personal-best-msg" style="display:none"></div>
                 <div class="gameover-stats">
                     <span class="stat-label">Score</span>
                     <span class="stat-value highlight" id="final-score">0</span>
@@ -1251,7 +1350,10 @@
                     <span class="stat-value" id="final-combo">0</span>
                     <span class="stat-label" id="final-time-label" style="display:none">Zeit</span>
                     <span class="stat-value" id="final-time" style="display:none">0:00</span>
+                    <span class="stat-label">Pieces/s</span>
+                    <span class="stat-value" id="final-pps">0.00</span>
                 </div>
+                <div class="gameover-records" id="gameover-records"></div>
                 <button class="start-btn" id="restart-btn">NOCHMAL</button>
                 <button class="share-btn" id="share-btn">&#128279; SCORE TEILEN</button>
             </div>

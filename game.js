@@ -242,6 +242,83 @@ class LifetimeStats {
     get(key) { return this.data[key]; }
 }
 
+// --- Key Mapper ---
+class KeyMapper {
+    constructor() {
+        this.defaults = {
+            moveLeft: 'ArrowLeft',
+            moveRight: 'ArrowRight',
+            softDrop: 'ArrowDown',
+            hardDrop: ' ',
+            rotateCW: 'ArrowUp',
+            rotateCCW: 'z',
+            rotate180: 'a',
+            hold: 'c',
+        };
+        this.bindings = { ...this.defaults };
+        this.load();
+        // Reverse map: physical key -> action
+        this._buildReverseMap();
+    }
+
+    load() {
+        try {
+            const saved = JSON.parse(localStorage.getItem('neonblocks_keybinds'));
+            if (saved) Object.assign(this.bindings, saved);
+        } catch(e) { /* ignore */ }
+    }
+
+    save() {
+        localStorage.setItem('neonblocks_keybinds', JSON.stringify(this.bindings));
+        this._buildReverseMap();
+    }
+
+    _buildReverseMap() {
+        this.reverseMap = {};
+        for (const [action, key] of Object.entries(this.bindings)) {
+            this.reverseMap[key] = action;
+            // Also map uppercase for letter keys
+            if (key.length === 1 && key.match(/[a-z]/i)) {
+                this.reverseMap[key.toLowerCase()] = action;
+                this.reverseMap[key.toUpperCase()] = action;
+            }
+        }
+        // Extra binds that always work (non-remappable alternatives)
+        if (!this.reverseMap['x'] && !this.reverseMap['X']) {
+            this.reverseMap['x'] = 'rotateCW';
+            this.reverseMap['X'] = 'rotateCW';
+        }
+        if (!this.reverseMap['Control']) this.reverseMap['Control'] = 'rotateCCW';
+        if (!this.reverseMap['Shift']) this.reverseMap['Shift'] = 'hold';
+    }
+
+    getAction(key) {
+        return this.reverseMap[key] || null;
+    }
+
+    set(action, key) {
+        // Remove any other action bound to this key
+        for (const [a, k] of Object.entries(this.bindings)) {
+            if (k === key && a !== action) this.bindings[a] = '';
+        }
+        this.bindings[action] = key;
+        this.save();
+    }
+
+    reset() {
+        this.bindings = { ...this.defaults };
+        this.save();
+    }
+
+    getKeyLabel(key) {
+        const labels = {
+            'ArrowLeft': '\u2190', 'ArrowRight': '\u2192', 'ArrowUp': '\u2191', 'ArrowDown': '\u2193',
+            ' ': 'Space', 'Control': 'Ctrl', 'Shift': 'Shift', 'Enter': 'Enter',
+        };
+        return labels[key] || (key.length === 1 ? key.toUpperCase() : key);
+    }
+}
+
 // --- Audio Engine ---
 class AudioEngine {
     constructor(settings) {
@@ -930,6 +1007,7 @@ class NeonBlocks {
     constructor() {
         this.settingsManager = new SettingsManager();
         this.lifetimeStats = new LifetimeStats();
+        this.keyMapper = new KeyMapper();
 
         // --- Cache DOM elements ---
         this.dom = this._cacheDomElements();
@@ -1118,7 +1196,10 @@ class NeonBlocks {
             finalCombo: document.getElementById('final-combo'),
             finalTime: document.getElementById('final-time'),
             finalTimeLabel: document.getElementById('final-time-label'),
+            finalPPS: document.getElementById('final-pps'),
             newHighscoreMsg: document.getElementById('new-highscore-msg'),
+            personalBestMsg: document.getElementById('personal-best-msg'),
+            gameoverRecords: document.getElementById('gameover-records'),
             // Leaderboards
             highscoreList: document.getElementById('highscore-list'),
             mobileHighscoreList: document.getElementById('mobile-highscore-list'),
@@ -1320,6 +1401,9 @@ class NeonBlocks {
         // Update lifetime stats display
         this._updateLifetimeStatsDisplay();
 
+        // Key binding buttons
+        this._setupKeybindUI();
+
         // Toggle switches - use touchend + click with dedup
         document.querySelectorAll('.toggle-switch').forEach(el => {
             const setting = el.dataset.setting;
@@ -1347,6 +1431,63 @@ class NeonBlocks {
 
             el.addEventListener('touchend', handleToggle, { passive: false });
             el.addEventListener('click', handleToggle);
+        });
+    }
+
+    _setupKeybindUI() {
+        const buttons = document.querySelectorAll('.keybind-btn');
+        let listeningBtn = null;
+        let listeningHandler = null;
+
+        const updateLabels = () => {
+            buttons.forEach(btn => {
+                const action = btn.dataset.action;
+                const key = this.keyMapper.bindings[action];
+                btn.textContent = key ? this.keyMapper.getKeyLabel(key) : '---';
+            });
+        };
+        updateLabels();
+
+        const startListening = (btn) => {
+            if (listeningBtn) stopListening();
+            listeningBtn = btn;
+            btn.classList.add('listening');
+            btn.textContent = '...';
+
+            listeningHandler = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (e.key === 'Escape') {
+                    stopListening();
+                    return;
+                }
+                this.keyMapper.set(btn.dataset.action, e.key);
+                stopListening();
+                updateLabels();
+            };
+            document.addEventListener('keydown', listeningHandler, true);
+        };
+
+        const stopListening = () => {
+            if (listeningBtn) {
+                listeningBtn.classList.remove('listening');
+                document.removeEventListener('keydown', listeningHandler, true);
+                listeningBtn = null;
+                listeningHandler = null;
+                updateLabels();
+            }
+        };
+
+        buttons.forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                startListening(btn);
+            });
+        });
+
+        document.getElementById('keybind-reset').addEventListener('click', () => {
+            this.keyMapper.reset();
+            updateLabels();
         });
     }
 
@@ -1886,6 +2027,8 @@ class NeonBlocks {
         const p = this.currentPiece;
         if (!p) return;
 
+        this.piecesPlaced = (this.piecesPlaced || 0) + 1;
+
         for (let row = 0; row < p.shape.length; row++) {
             for (let col = 0; col < p.shape[row].length; col++) {
                 if (p.shape[row][col]) {
@@ -2186,6 +2329,11 @@ class NeonBlocks {
         localStorage.setItem('neonblocks_scores_v2', JSON.stringify(this.highScores));
         this.updateHighScoreDisplay();
 
+        // Snapshot previous bests BEFORE recording
+        const prevBestScore = this.lifetimeStats.get('bestScore');
+        const prevBestLines = this.lifetimeStats.get('bestLines');
+        const prevBestLevel = this.lifetimeStats.get('bestLevel');
+
         // Track lifetime stats
         this.lifetimeStats.record({
             score: this.score, lines: this.lines, level: this.level,
@@ -2199,6 +2347,10 @@ class NeonBlocks {
         this.dom.finalTspins.textContent = this.tspinCount;
         this.dom.finalTetrises.textContent = this.tetrisCount;
         this.dom.finalCombo.textContent = this.maxCombo;
+
+        // Pieces per second
+        const pps = elapsed > 0 ? (this.piecesPlaced / (elapsed / 1000)).toFixed(2) : '0.00';
+        this.dom.finalPPS.textContent = pps;
 
         // Show time for sprint/ultra
         if (this.gameMode !== 'classic') {
@@ -2217,6 +2369,37 @@ class NeonBlocks {
             this.confetti.burst(80);
         } else {
             this.dom.newHighscoreMsg.style.display = 'none';
+        }
+
+        // Personal best badges
+        const records = this.dom.gameoverRecords;
+        records.innerHTML = '';
+        const addBadge = (label, isNew) => {
+            const badge = document.createElement('span');
+            badge.className = 'record-badge ' + (isNew ? 'new-record' : 'prev-record');
+            badge.textContent = label;
+            records.appendChild(badge);
+        };
+
+        const newBestScore = this.score > prevBestScore && this.score > 0;
+        const newBestLines = this.lines > prevBestLines && this.lines > 0;
+        const newBestLevel = this.level > prevBestLevel && this.level > 1;
+
+        if (newBestScore) addBadge('New Best Score!', true);
+        if (newBestLines) addBadge('New Best Lines!', true);
+        if (newBestLevel) addBadge('New Best Level!', true);
+
+        // Show personal best message
+        if (newBestScore || newBestLines || newBestLevel) {
+            this.dom.personalBestMsg.style.display = 'block';
+            this.dom.personalBestMsg.textContent = 'PERSONAL BEST!';
+        } else if (prevBestScore > 0) {
+            const pct = Math.round((this.score / prevBestScore) * 100);
+            this.dom.personalBestMsg.style.display = 'block';
+            this.dom.personalBestMsg.textContent = `${pct}% deines Bests (${prevBestScore.toLocaleString()})`;
+            this.dom.personalBestMsg.style.color = pct >= 80 ? '#00ff6a' : 'rgba(255,255,255,0.4)';
+        } else {
+            this.dom.personalBestMsg.style.display = 'none';
         }
 
         // Sprint win message
@@ -2330,7 +2513,7 @@ class NeonBlocks {
         const startLvl = (this.gameMode === 'classic') ? (this.settingsManager.get('startLevel') || 1) : 1;
         this.score = 0; this.level = startLvl; this.lines = 0;
         this.combo = -1; this.maxCombo = 0;
-        this.tspinCount = 0; this.tetrisCount = 0;
+        this.tspinCount = 0; this.tetrisCount = 0; this.piecesPlaced = 0;
         this.backToBack = false; this.lastTspin = 'none';
         this.lineClearAnim = null;
         this.screenShake = 0; this.levelUpFlash = 0;
@@ -2727,31 +2910,33 @@ class NeonBlocks {
 
             if (this.gameState !== 'playing') return;
 
-            // Online mode controls - standard keys control local board
+            // Online mode controls - remappable keys control local board
             if (this.gameMode === 'online' && this.vsBoards) {
                 const local = this.vsBoards[0];
                 if (!local.alive) return;
+                const onlineAction = this.keyMapper.getAction(e.key);
+                if (!onlineAction) return;
                 e.preventDefault();
                 const now = performance.now();
-                switch(e.key) {
-                    case 'ArrowLeft':
-                        if (!local.keys['ArrowLeft']) { local.movePiece(-1, 0); local.dasTimer['ArrowLeft'] = now; this.audio.play('move'); }
-                        local.keys['ArrowLeft'] = true; break;
-                    case 'ArrowRight':
-                        if (!local.keys['ArrowRight']) { local.movePiece(1, 0); local.dasTimer['ArrowRight'] = now; this.audio.play('move'); }
-                        local.keys['ArrowRight'] = true; break;
-                    case 'ArrowDown':
-                        local.keys['ArrowDown'] = true; local.softDrop(); break;
-                    case 'ArrowUp': case 'x': case 'X':
+                switch(onlineAction) {
+                    case 'moveLeft':
+                        if (!local.keys['moveLeft']) { local.movePiece(-1, 0); local.dasTimer['moveLeft'] = now; this.audio.play('move'); }
+                        local.keys['moveLeft'] = true; break;
+                    case 'moveRight':
+                        if (!local.keys['moveRight']) { local.movePiece(1, 0); local.dasTimer['moveRight'] = now; this.audio.play('move'); }
+                        local.keys['moveRight'] = true; break;
+                    case 'softDrop':
+                        local.keys['softDrop'] = true; local.softDrop(); break;
+                    case 'rotateCW':
                         local.rotatePiece(1); this.audio.play('rotate'); break;
-                    case 'z': case 'Z': case 'Control':
+                    case 'rotateCCW':
                         local.rotatePiece(-1); this.audio.play('rotate'); break;
-                    case 'a': case 'A':
+                    case 'rotate180':
                         local.rotatePiece(2); this.audio.play('rotate'); break;
-                    case ' ':
+                    case 'hardDrop':
                         local.hardDrop(); this._vsLockPiece(local); this.audio.play('drop'); this.audio.play('impact');
                         this._onlineSendState(); break;
-                    case 'c': case 'C': case 'Shift':
+                    case 'hold':
                         if (local.holdCurrentPiece()) this.audio.play('hold'); break;
                 }
                 return;
@@ -2788,28 +2973,26 @@ class NeonBlocks {
                 return;
             }
 
-            // Single-player controls
-            switch(e.key) {
-                case 'ArrowLeft':
-                    e.preventDefault();
-                    if (!this.keys['ArrowLeft']) { this.movePiece(-1, 0); this.dasTimer['ArrowLeft'] = performance.now(); }
-                    this.keys['ArrowLeft'] = true; break;
-                case 'ArrowRight':
-                    e.preventDefault();
-                    if (!this.keys['ArrowRight']) { this.movePiece(1, 0); this.dasTimer['ArrowRight'] = performance.now(); }
-                    this.keys['ArrowRight'] = true; break;
-                case 'ArrowDown':
-                    e.preventDefault(); this.keys['ArrowDown'] = true; this.softDrop(); break;
-                case 'ArrowUp': case 'x': case 'X':
-                    e.preventDefault(); this.rotatePiece(1); break;
-                case 'z': case 'Z': case 'Control':
-                    e.preventDefault(); this.rotatePiece(-1); break;
-                case 'a': case 'A':
-                    e.preventDefault(); this.rotatePiece(2); break;
-                case ' ':
-                    e.preventDefault(); this.hardDrop(); break;
-                case 'c': case 'C': case 'Shift':
-                    e.preventDefault(); this.holdCurrentPiece(); break;
+            // Single-player controls (remappable)
+            const action = this.keyMapper.getAction(e.key);
+            if (action) {
+                e.preventDefault();
+                const now = performance.now();
+                switch(action) {
+                    case 'moveLeft':
+                        if (!this.keys['moveLeft']) { this.movePiece(-1, 0); this.dasTimer['moveLeft'] = now; }
+                        this.keys['moveLeft'] = true; break;
+                    case 'moveRight':
+                        if (!this.keys['moveRight']) { this.movePiece(1, 0); this.dasTimer['moveRight'] = now; }
+                        this.keys['moveRight'] = true; break;
+                    case 'softDrop':
+                        this.keys['softDrop'] = true; this.softDrop(); break;
+                    case 'rotateCW': this.rotatePiece(1); break;
+                    case 'rotateCCW': this.rotatePiece(-1); break;
+                    case 'rotate180': this.rotatePiece(2); break;
+                    case 'hardDrop': this.hardDrop(); break;
+                    case 'hold': this.holdCurrentPiece(); break;
+                }
             }
         });
 
@@ -2817,8 +3000,11 @@ class NeonBlocks {
             // Online mode key up
             if (this.gameMode === 'online' && this.vsBoards) {
                 const local = this.vsBoards[0];
-                local.keys[e.key] = false;
-                if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') delete local.dasTimer[e.key];
+                const onUpAction = this.keyMapper.getAction(e.key);
+                if (onUpAction) {
+                    local.keys[onUpAction] = false;
+                    if (onUpAction === 'moveLeft' || onUpAction === 'moveRight') delete local.dasTimer[onUpAction];
+                }
                 return;
             }
             // VS mode key up
@@ -2833,11 +3019,14 @@ class NeonBlocks {
                 return;
             }
 
-            this.keys[e.key] = false;
-            if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
-                delete this.dasTimer[e.key];
-                if (e.key === 'ArrowLeft' && this.keys['ArrowRight']) { this.dasTimer['ArrowRight'] = performance.now(); }
-                else if (e.key === 'ArrowRight' && this.keys['ArrowLeft']) { this.dasTimer['ArrowLeft'] = performance.now(); }
+            const upAction = this.keyMapper.getAction(e.key);
+            if (upAction) {
+                this.keys[upAction] = false;
+                if (upAction === 'moveLeft' || upAction === 'moveRight') {
+                    delete this.dasTimer[upAction];
+                    if (upAction === 'moveLeft' && this.keys['moveRight']) { this.dasTimer['moveRight'] = performance.now(); }
+                    else if (upAction === 'moveRight' && this.keys['moveLeft']) { this.dasTimer['moveLeft'] = performance.now(); }
+                }
             }
         });
 
@@ -2979,18 +3168,18 @@ class NeonBlocks {
 
     handleDAS(now) {
         if (this.gameState !== 'playing') return;
-        ['ArrowLeft', 'ArrowRight'].forEach(key => {
+        ['moveLeft', 'moveRight'].forEach(key => {
             if (this.keys[key] && this.dasTimer[key]) {
                 const elapsed = now - this.dasTimer[key];
                 if (elapsed >= this.das) {
                     if (!this.arrTimer[key] || now - this.arrTimer[key] >= this.arr) {
-                        this.movePiece(key === 'ArrowLeft' ? -1 : 1, 0);
+                        this.movePiece(key === 'moveLeft' ? -1 : 1, 0);
                         this.arrTimer[key] = now;
                     }
                 }
             }
         });
-        if (this.keys['ArrowDown']) this.softDrop();
+        if (this.keys['softDrop']) this.softDrop();
     }
 
     /** Update score/level/lines displays with smooth score animation. */
@@ -3319,7 +3508,7 @@ class NeonBlocks {
             if (this.gameMode === 'online' && this.vsBoards) {
                 // Online mode: only update local board, remote is display-only
                 const local = this.vsBoards[0];
-                this._vsHandleDAS(local, time, 'ArrowLeft', 'ArrowRight', 'ArrowDown');
+                this._vsHandleDAS(local, time, 'moveLeft', 'moveRight', 'softDrop');
                 this._updateVsBoard(local, time, dt);
                 this._updateVsHud();
                 this.audio.setDangerLevel(local.getDangerLevel());
