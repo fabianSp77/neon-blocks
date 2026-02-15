@@ -159,6 +159,7 @@ const MODE_DESCRIPTIONS = {
     sprint: 'Schaffe 40 Lines so schnell wie moeglich!',
     ultra: '2 Minuten - Maximaler Score!',
     vs: 'Lokal 1v1 - Wer ueberlebt gewinnt!',
+    online: 'Online 1v1 - Spiele gegen einen Freund!',
 };
 
 // VS mode board gap
@@ -780,6 +781,116 @@ class GameBoard {
 COLORS_NORMAL['G'] = { fill: '#555', glow: 'rgba(100,100,100,0.4)', dark: '#333', pattern: 'grid' };
 COLORS_COLORBLIND['G'] = { fill: '#555', glow: 'rgba(100,100,100,0.4)', dark: '#333', pattern: 'grid' };
 
+// --- Network Manager (PeerJS WebRTC) ---
+class NetworkManager {
+    constructor() {
+        this.peer = null;
+        this.conn = null;
+        this.isHost = false;
+        this.roomCode = '';
+        this.onConnect = null;
+        this.onData = null;
+        this.onDisconnect = null;
+        this.onError = null;
+    }
+
+    _generateRoomCode() {
+        const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+        let code = '';
+        for (let i = 0; i < 4; i++) code += chars[Math.floor(Math.random() * chars.length)];
+        return code;
+    }
+
+    createRoom() {
+        return new Promise((resolve, reject) => {
+            this.roomCode = this._generateRoomCode();
+            const peerId = 'neonblocks-' + this.roomCode;
+            this.isHost = true;
+
+            this.peer = new Peer(peerId, { debug: 0 });
+
+            this.peer.on('open', () => resolve(this.roomCode));
+
+            this.peer.on('connection', (conn) => {
+                this.conn = conn;
+                this._setupConnection(conn);
+            });
+
+            this.peer.on('error', (err) => {
+                if (err.type === 'unavailable-id') {
+                    this.peer.destroy();
+                    this.createRoom().then(resolve).catch(reject);
+                } else {
+                    if (this.onError) this.onError(err);
+                    reject(err);
+                }
+            });
+        });
+    }
+
+    joinRoom(code) {
+        return new Promise((resolve, reject) => {
+            this.roomCode = code.toUpperCase().trim();
+            const peerId = 'neonblocks-join-' + Date.now();
+            this.isHost = false;
+
+            this.peer = new Peer(peerId, { debug: 0 });
+
+            this.peer.on('open', () => {
+                const conn = this.peer.connect('neonblocks-' + this.roomCode, { reliable: true });
+                this.conn = conn;
+
+                conn.on('open', () => {
+                    this._setupConnection(conn);
+                    resolve();
+                });
+
+                conn.on('error', (err) => {
+                    if (this.onError) this.onError(err);
+                    reject(err);
+                });
+            });
+
+            this.peer.on('error', (err) => {
+                if (this.onError) this.onError(err);
+                reject(err);
+            });
+        });
+    }
+
+    _setupConnection(conn) {
+        conn.on('open', () => {
+            if (this.onConnect) this.onConnect();
+        });
+
+        conn.on('data', (data) => {
+            if (this.onData) this.onData(data);
+        });
+
+        conn.on('close', () => {
+            if (this.onDisconnect) this.onDisconnect();
+        });
+
+        conn.on('error', (err) => {
+            if (this.onError) this.onError(err);
+        });
+
+        // If connection was already open (joiner side), fire connect immediately
+        if (conn.open && this.onConnect) this.onConnect();
+    }
+
+    send(data) {
+        if (this.conn && this.conn.open) this.conn.send(data);
+    }
+
+    destroy() {
+        if (this.conn) { try { this.conn.close(); } catch (_) { /* already closed */ } }
+        if (this.peer) { try { this.peer.destroy(); } catch (_) { /* already destroyed */ } }
+        this.conn = null;
+        this.peer = null;
+    }
+}
+
 // --- Main Game ---
 class NeonBlocks {
     constructor() {
@@ -855,6 +966,11 @@ class NeonBlocks {
         this.vsBoards = null; // [GameBoard, GameBoard] when in VS mode
         this.p2Name = '';
 
+        // Online mode
+        this.network = null;
+        this.onlineReady = false;
+        this._onlineSyncFrame = 0;
+
         // Player
         this.playerName = '';
 
@@ -899,6 +1015,7 @@ class NeonBlocks {
         this.setupSwipeControls();
         this.setupSettings();
         this.setupModeSelector();
+        this.setupOnlineLobby();
         this.setupMobileLeaderboard();
         this.updateHighScoreDisplay();
         this.resizeBg();
@@ -998,6 +1115,14 @@ class NeonBlocks {
             vsStats: document.getElementById('vs-stats'),
             vsRestartBtn: document.getElementById('vs-restart-btn'),
             vsMenuBtn: document.getElementById('vs-menu-btn'),
+            // Online mode
+            onlineLobby: document.getElementById('online-lobby'),
+            onlineCreateBtn: document.getElementById('online-create-btn'),
+            onlineJoinBtn: document.getElementById('online-join-btn'),
+            roomCodeInput: document.getElementById('room-code-input'),
+            onlineStatus: document.getElementById('online-status'),
+            onlineRoomDisplay: document.getElementById('online-room-display'),
+            onlineRoomCode: document.getElementById('online-room-code'),
         };
     }
 
@@ -1154,11 +1279,231 @@ class NeonBlocks {
                 this.dom.modeDesc.textContent = MODE_DESCRIPTIONS[this.gameMode];
                 // Show/hide VS-specific UI
                 const isVs = this.gameMode === 'vs';
+                const isOnline = this.gameMode === 'online';
                 this.dom.p2NameGroup.style.display = isVs ? '' : 'none';
                 this.dom.vsControlsHint.style.display = isVs ? '' : 'none';
                 this.dom.p1NameLabel.textContent = isVs ? 'Spieler 1' : 'Dein Name';
+                // Show/hide Online lobby
+                this.dom.onlineLobby.style.display = isOnline ? '' : 'none';
+                this.dom.startBtn.style.display = isOnline ? 'none' : '';
+                // Reset online lobby state when switching away
+                if (!isOnline && this.network) {
+                    this.network.destroy();
+                    this.network = null;
+                    this._resetOnlineLobby();
+                }
             });
         });
+    }
+
+    // --- Online Lobby ---
+    setupOnlineLobby() {
+        this.dom.onlineCreateBtn.addEventListener('click', () => this._onlineCreateRoom());
+        this.dom.onlineJoinBtn.addEventListener('click', () => this._onlineJoinRoom());
+        this.dom.roomCodeInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') this._onlineJoinRoom();
+        });
+    }
+
+    _resetOnlineLobby() {
+        this.dom.onlineStatus.textContent = '';
+        this.dom.onlineStatus.className = 'online-status';
+        this.dom.onlineRoomDisplay.style.display = 'none';
+        this.dom.onlineCreateBtn.disabled = false;
+        this.dom.onlineJoinBtn.disabled = false;
+        this.dom.roomCodeInput.disabled = false;
+    }
+
+    _setOnlineStatus(text, type) {
+        this.dom.onlineStatus.textContent = text;
+        this.dom.onlineStatus.className = 'online-status' + (type ? ' ' + type : '');
+    }
+
+    _onlineCreateRoom() {
+        if (this.network) this.network.destroy();
+        this.network = new NetworkManager();
+        this._setOnlineStatus('Raum wird erstellt...', '');
+        this.dom.onlineCreateBtn.disabled = true;
+        this.dom.onlineJoinBtn.disabled = true;
+
+        this._setupNetworkCallbacks();
+
+        this.network.createRoom().then((code) => {
+            this.dom.onlineRoomDisplay.style.display = '';
+            this.dom.onlineRoomCode.textContent = code;
+            this._setOnlineStatus('Warte auf Gegner...', '');
+        }).catch(() => {
+            this._setOnlineStatus('Fehler beim Erstellen. Versuche es nochmal.', 'error');
+            this.dom.onlineCreateBtn.disabled = false;
+            this.dom.onlineJoinBtn.disabled = false;
+        });
+    }
+
+    _onlineJoinRoom() {
+        const code = this.dom.roomCodeInput.value.trim().toUpperCase();
+        if (code.length < 4) {
+            this._setOnlineStatus('Bitte gib einen gueltigen Code ein.', 'error');
+            return;
+        }
+        if (this.network) this.network.destroy();
+        this.network = new NetworkManager();
+        this._setOnlineStatus('Verbinde...', '');
+        this.dom.onlineCreateBtn.disabled = true;
+        this.dom.onlineJoinBtn.disabled = true;
+        this.dom.roomCodeInput.disabled = true;
+
+        this._setupNetworkCallbacks();
+
+        this.network.joinRoom(code).then(() => {
+            this._setOnlineStatus('Verbunden! Warte auf Start...', 'success');
+        }).catch(() => {
+            this._setOnlineStatus('Raum nicht gefunden oder Fehler.', 'error');
+            this.dom.onlineCreateBtn.disabled = false;
+            this.dom.onlineJoinBtn.disabled = false;
+            this.dom.roomCodeInput.disabled = false;
+        });
+    }
+
+    _setupNetworkCallbacks() {
+        this.network.onConnect = () => {
+            this._setOnlineStatus('Gegner verbunden! Spiel startet...', 'success');
+            // Send own name to opponent
+            this.network.send({
+                type: 'hello',
+                name: this._sanitizePlayerName(this.dom.playerNameInput.value),
+            });
+            // Start game after a short delay so both sides can exchange names
+            setTimeout(() => {
+                if (this.gameState === 'start' || this.gameState === 'gameover') {
+                    this.startGame();
+                }
+            }, 800);
+        };
+
+        this.network.onData = (data) => this._onlineHandleData(data);
+
+        this.network.onDisconnect = () => {
+            if (this.gameState === 'playing') {
+                this.gameState = 'gameover';
+                this.audio.stopMusic();
+                this._onlineShowDisconnect();
+            } else {
+                this._setOnlineStatus('Gegner hat die Verbindung getrennt.', 'error');
+                this._resetOnlineLobby();
+            }
+        };
+
+        this.network.onError = () => {
+            this._setOnlineStatus('Verbindungsfehler.', 'error');
+            this.dom.onlineCreateBtn.disabled = false;
+            this.dom.onlineJoinBtn.disabled = false;
+            this.dom.roomCodeInput.disabled = false;
+        };
+    }
+
+    _onlineHandleData(data) {
+        if (!data || !data.type) return;
+
+        switch (data.type) {
+            case 'hello':
+                this.p2Name = this._sanitizePlayerName(data.name);
+                break;
+
+            case 'state': {
+                // Update remote board display
+                const remote = this.vsBoards ? this.vsBoards[1] : null;
+                if (!remote) return;
+                remote.grid = data.grid;
+                remote.score = data.score;
+                remote.lines = data.lines;
+                remote.level = data.level;
+                remote.holdPiece = data.hold;
+                remote.nextPieces = data.next || [];
+                remote.screenShake = data.shake || 0;
+                remote.screenShakeIntensity = data.shakeI || 0;
+                remote.impactFlash = data.impact || 0;
+                remote.impactFlashRows = data.impactRows || [];
+                remote.levelUpFlash = data.levelFlash || 0;
+                // Reconstruct current piece for rendering
+                if (data.piece) {
+                    remote.currentPiece = {
+                        type: data.piece.type,
+                        x: data.piece.x,
+                        y: data.piece.y,
+                        rotation: data.piece.rotation,
+                        shape: PIECES[data.piece.type][data.piece.rotation],
+                    };
+                    remote._remoteGhostY = data.ghostY;
+                } else {
+                    remote.currentPiece = null;
+                }
+                break;
+            }
+
+            case 'garbage':
+                if (this.vsBoards && this.vsBoards[0].alive) {
+                    this.vsBoards[0].pendingGarbage += data.count;
+                    const attackEl = this.dom.vsP2Attack;
+                    attackEl.textContent = `+${data.count}`;
+                    setTimeout(() => { attackEl.textContent = ''; }, 800);
+                }
+                break;
+
+            case 'gameover':
+                if (this.vsBoards && this.gameState === 'playing') {
+                    this.vsBoards[1].alive = false;
+                    this._vsGameOver(this.vsBoards[1]);
+                }
+                break;
+
+            case 'lineClear':
+                // Play remote clear sound
+                if (data.isTetris) this.audio.play('tetris');
+                else if (data.isTspin) this.audio.play('tspin');
+                break;
+
+            case 'rematch':
+                if (this.gameState === 'gameover') this.startGame();
+                break;
+        }
+    }
+
+    _onlineSendState() {
+        if (!this.network || !this.vsBoards) return;
+        const local = this.vsBoards[0];
+        this.network.send({
+            type: 'state',
+            grid: local.grid,
+            piece: local.currentPiece ? {
+                type: local.currentPiece.type,
+                x: local.currentPiece.x,
+                y: local.currentPiece.y,
+                rotation: local.currentPiece.rotation,
+            } : null,
+            ghostY: local.currentPiece ? local.getGhostY() : 0,
+            hold: local.holdPiece,
+            next: local.nextPieces.slice(0, 3),
+            score: local.score,
+            lines: local.lines,
+            level: local.level,
+            shake: local.screenShake,
+            shakeI: local.screenShakeIntensity,
+            impact: local.impactFlash,
+            impactRows: local.impactFlashRows,
+            levelFlash: local.levelUpFlash,
+        });
+    }
+
+    _onlineShowDisconnect() {
+        this.dom.vsWinnerText.textContent = 'VERBINDUNG VERLOREN';
+        this.dom.vsWinnerText.style.color = '#ff0044';
+        this.dom.vsResultDetail.textContent = 'Gegner hat die Verbindung getrennt';
+
+        const statsEl = this.dom.vsStats;
+        while (statsEl.firstChild) statsEl.removeChild(statsEl.firstChild);
+
+        this.dom.vsResultOverlay.classList.remove('hidden');
+        this.audio.play('gameover');
     }
 
     // --- Background ---
@@ -1803,6 +2148,9 @@ class NeonBlocks {
         if (this.gameMode === 'vs') {
             this.p2Name = this._sanitizePlayerName(this.dom.p2NameInput.value);
         }
+        if (this.gameMode === 'online' && !this.p2Name) {
+            this.p2Name = 'GEGNER';
+        }
 
         this.audio.init();
 
@@ -1816,6 +2164,8 @@ class NeonBlocks {
         this.startCountdown(() => {
             if (this.gameMode === 'vs') {
                 this._initVsMode();
+            } else if (this.gameMode === 'online') {
+                this._initOnlineMode();
             } else {
                 this.vsBoards = null;
                 this.dom.vsHud.style.display = 'none';
@@ -1827,6 +2177,40 @@ class NeonBlocks {
             this.audio.startMusic();
             this.canvas.focus();
         });
+    }
+
+    /** Initialize Online 1v1 mode - like VS but only local board runs game logic. */
+    _initOnlineMode() {
+        const local = new GameBoard(1);
+        const remote = new GameBoard(2);
+        local.init();
+        // Remote board is initialized with an empty grid; will be populated by network state
+        remote.grid = Array.from({ length: TOTAL_ROWS }, () => Array(COLS).fill(null));
+        remote.alive = true;
+        remote.currentPiece = null;
+        this.vsBoards = [local, remote];
+
+        // Resize canvas for two boards
+        this.canvas.width = (COLS * 2 + VS_GAP) * CELL;
+        this.canvas.height = ROWS * CELL;
+        this.confettiCanvas.width = this.canvas.width;
+        this.confettiCanvas.height = this.canvas.height;
+
+        // Show VS HUD
+        this.dom.vsHud.style.display = '';
+        this.dom.vsP1Name.textContent = this.playerName;
+        this.dom.vsP2Name.textContent = this.p2Name;
+        this.dom.vsP1Score.textContent = '0';
+        this.dom.vsP2Score.textContent = '0';
+        this.dom.vsP1Lines.textContent = '0 Lines';
+        this.dom.vsP2Lines.textContent = '0 Lines';
+        this.dom.vsP1Attack.textContent = '';
+        this.dom.vsP2Attack.textContent = '';
+
+        // Hide single-player stats bar
+        if (this.dom.statsBar) this.dom.statsBar.style.display = 'none';
+
+        this._onlineSyncFrame = 0;
     }
 
     _initGameState() {
@@ -1938,8 +2322,15 @@ class NeonBlocks {
 
             // Send attack to opponent
             if (result.attack > 0) {
-                const opponent = this.vsBoards[board.playerNum === 1 ? 1 : 0];
-                opponent.pendingGarbage += result.attack;
+                if (this.gameMode === 'online' && this.network && board.playerNum === 1) {
+                    // Online: send garbage to remote opponent
+                    this.network.send({ type: 'garbage', count: result.attack });
+                    this.network.send({ type: 'lineClear', isTetris: result.isTetris, isTspin: result.isTspin });
+                } else {
+                    // Local VS: apply directly
+                    const opponent = this.vsBoards[board.playerNum === 1 ? 1 : 0];
+                    opponent.pendingGarbage += result.attack;
+                }
                 // Show attack indicator
                 const attackEl = board.playerNum === 1 ? this.dom.vsP1Attack : this.dom.vsP2Attack;
                 attackEl.textContent = `+${result.attack}`;
@@ -1982,7 +2373,12 @@ class NeonBlocks {
     _vsGameOver(losingBoard) {
         this.gameState = 'gameover';
         this.audio.stopMusic();
-        const winner = this.vsBoards[losingBoard.playerNum === 1 ? 1 : 0];
+
+        // Online: notify opponent that we lost
+        if (this.gameMode === 'online' && this.network && losingBoard.playerNum === 1) {
+            this.network.send({ type: 'gameover' });
+        }
+
         const winnerName = losingBoard.playerNum === 1 ? this.p2Name : this.playerName;
         const loserName = losingBoard.playerNum === 1 ? this.playerName : this.p2Name;
 
@@ -2123,7 +2519,7 @@ class NeonBlocks {
 
             // Ghost
             if (this.settingsManager.get('ghost')) {
-                const ghostY = board.getGhostY();
+                const ghostY = (board._remoteGhostY !== undefined) ? board._remoteGhostY : board.getGhostY();
                 if (ghostY !== p.y) {
                     for (let row = 0; row < p.shape.length; row++) {
                         for (let col = 0; col < p.shape[row].length; col++) {
@@ -2210,6 +2606,8 @@ class NeonBlocks {
             }
 
             if (e.key === 'p' || e.key === 'P' || e.key === 'Escape') {
+                // No pause in online mode
+                if (this.gameMode === 'online') return;
                 if (this.gameState === 'playing' || this.gameState === 'paused') {
                     e.preventDefault(); this.togglePause();
                 }
@@ -2217,6 +2615,36 @@ class NeonBlocks {
             }
 
             if (this.gameState !== 'playing') return;
+
+            // Online mode controls - standard keys control local board
+            if (this.gameMode === 'online' && this.vsBoards) {
+                const local = this.vsBoards[0];
+                if (!local.alive) return;
+                e.preventDefault();
+                const now = performance.now();
+                switch(e.key) {
+                    case 'ArrowLeft':
+                        if (!local.keys['ArrowLeft']) { local.movePiece(-1, 0); local.dasTimer['ArrowLeft'] = now; this.audio.play('move'); }
+                        local.keys['ArrowLeft'] = true; break;
+                    case 'ArrowRight':
+                        if (!local.keys['ArrowRight']) { local.movePiece(1, 0); local.dasTimer['ArrowRight'] = now; this.audio.play('move'); }
+                        local.keys['ArrowRight'] = true; break;
+                    case 'ArrowDown':
+                        local.keys['ArrowDown'] = true; local.softDrop(); break;
+                    case 'ArrowUp': case 'x': case 'X':
+                        local.rotatePiece(1); this.audio.play('rotate'); break;
+                    case 'z': case 'Z': case 'Control':
+                        local.rotatePiece(-1); this.audio.play('rotate'); break;
+                    case 'a': case 'A':
+                        local.rotatePiece(2); this.audio.play('rotate'); break;
+                    case ' ':
+                        local.hardDrop(); this._vsLockPiece(local); this.audio.play('drop'); this.audio.play('impact');
+                        this._onlineSendState(); break;
+                    case 'c': case 'C': case 'Shift':
+                        if (local.holdCurrentPiece()) this.audio.play('hold'); break;
+                }
+                return;
+            }
 
             // VS mode controls
             if (this.gameMode === 'vs' && this.vsBoards) {
@@ -2275,6 +2703,13 @@ class NeonBlocks {
         });
 
         document.addEventListener('keyup', e => {
+            // Online mode key up
+            if (this.gameMode === 'online' && this.vsBoards) {
+                const local = this.vsBoards[0];
+                local.keys[e.key] = false;
+                if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') delete local.dasTimer[e.key];
+                return;
+            }
             // VS mode key up
             if (this.gameMode === 'vs' && this.vsBoards) {
                 const [b1, b2] = this.vsBoards;
@@ -2302,7 +2737,12 @@ class NeonBlocks {
 
         // VS mode buttons
         if (this.dom.vsRestartBtn) {
-            this.dom.vsRestartBtn.addEventListener('click', () => this.startGame());
+            this.dom.vsRestartBtn.addEventListener('click', () => {
+                if (this.gameMode === 'online' && this.network) {
+                    this.network.send({ type: 'rematch' });
+                }
+                this.startGame();
+            });
         }
         if (this.dom.vsMenuBtn) {
             this.dom.vsMenuBtn.addEventListener('click', () => {
@@ -2311,6 +2751,12 @@ class NeonBlocks {
                 this.dom.startOverlay.classList.remove('hidden');
                 this.gameState = 'start';
                 this.vsBoards = null;
+                // Clean up network if online
+                if (this.network) {
+                    this.network.destroy();
+                    this.network = null;
+                    this._resetOnlineLobby();
+                }
                 // Restore canvas size
                 this.calculateCellSize();
                 if (this.dom.statsBar) this.dom.statsBar.style.display = '';
@@ -2755,7 +3201,17 @@ class NeonBlocks {
         this.drawBackground();
 
         if (this.gameState === 'playing') {
-            if (this.gameMode === 'vs' && this.vsBoards) {
+            if (this.gameMode === 'online' && this.vsBoards) {
+                // Online mode: only update local board, remote is display-only
+                const local = this.vsBoards[0];
+                this._vsHandleDAS(local, time, 'ArrowLeft', 'ArrowRight', 'ArrowDown');
+                this._updateVsBoard(local, time, dt);
+                this._updateVsHud();
+                this.audio.setDangerLevel(local.getDangerLevel());
+                // Send state to opponent periodically
+                this._onlineSyncFrame++;
+                if (this._onlineSyncFrame % 6 === 0) this._onlineSendState();
+            } else if (this.gameMode === 'vs' && this.vsBoards) {
                 // VS mode update
                 const [b1, b2] = this.vsBoards;
                 this._vsHandleDAS(b1, time, 'a', 'd', 's');
@@ -2807,8 +3263,8 @@ class NeonBlocks {
         const ctx = this.ctx;
         ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
 
-        // VS mode rendering
-        if (this.gameMode === 'vs' && this.vsBoards) {
+        // VS / Online mode rendering
+        if ((this.gameMode === 'vs' || this.gameMode === 'online') && this.vsBoards) {
             const p2Offset = (COLS + VS_GAP) * CELL;
 
             // Draw gap between boards
