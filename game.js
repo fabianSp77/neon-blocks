@@ -11,9 +11,33 @@ const ROWS = 20;
 const HIDDEN_ROWS = 2;
 const TOTAL_ROWS = ROWS + HIDDEN_ROWS;
 const BASE_CELL = 30;
+const MIN_CELL = 10;
 
 // Dynamic cell size
 let CELL = BASE_CELL;
+
+// Timing constants
+const DEFAULT_DAS = 133;    // Delayed Auto Shift (ms)
+const DEFAULT_ARR = 10;     // Auto Repeat Rate (ms)
+const MAX_LOCK_MOVES = 15;
+const LOCK_DELAY_MS = 500;
+const SPAWN_FADE_SPEED = 0.1;
+
+// Game mode constants
+const SPRINT_TARGET = 40;
+const ULTRA_DURATION_MS = 120000;   // 2 minutes
+const LINES_PER_LEVEL = 10;
+
+// Visual constants
+const BG_STAR_COUNT = 60;
+const BG_GRID_SPACING = 40;
+const MAX_PLAYER_NAME_LENGTH = 10;
+const DEFAULT_PLAYER_NAME = 'ANONYM';
+const COUNTDOWN_START = 3;
+
+// Layout constants
+const MOBILE_BREAKPOINT = 768;
+const MOBILE_PADDING = 16;
 
 const COLORS_NORMAL = {
     I: { fill: '#00f0ff', glow: 'rgba(0,240,255,0.6)', dark: '#006670', pattern: 'lines' },
@@ -104,9 +128,12 @@ const MODE_DESCRIPTIONS = {
     ultra: '2 Minuten - Maximaler Score!',
 };
 
+const DROP_SPEEDS = [800,720,630,550,470,380,300,220,150,100,80,65,50,40,30,25,20,15,10,8,5];
+
+/** @param {number} level - Current game level (1-based) */
 function getDropInterval(level) {
-    const speeds = [800,720,630,550,470,380,300,220,150,100,80,65,50,40,30,25,20,15,10,8,5];
-    return speeds[Math.min(level - 1, speeds.length - 1)];
+    const clampedLevel = Math.max(1, Math.min(level, DROP_SPEEDS.length));
+    return DROP_SPEEDS[clampedLevel - 1];
 }
 
 // --- Settings Manager ---
@@ -121,7 +148,9 @@ class SettingsManager {
         try {
             const saved = JSON.parse(localStorage.getItem('neonblocks_settings'));
             if (saved) Object.assign(this.settings, saved);
-        } catch(e) {}
+        } catch(e) {
+            console.warn('Failed to load settings from localStorage:', e.message);
+        }
     }
 
     save() {
@@ -145,7 +174,7 @@ class SettingsManager {
 // --- Audio Engine ---
 class AudioEngine {
     constructor(settings) {
-        this.ctx = null;
+        this.audioCtx = null;
         this.settings = settings;
         this.masterGain = null;
         this.musicGain = null;
@@ -154,16 +183,18 @@ class AudioEngine {
     }
 
     init() {
-        if (this.ctx) return;
+        if (this.audioCtx) return;
         try {
-            this.ctx = new (window.AudioContext || window.webkitAudioContext)();
-            this.masterGain = this.ctx.createGain();
+            this.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            this.masterGain = this.audioCtx.createGain();
             this.masterGain.gain.value = this.settings.get('volume') / 100;
-            this.masterGain.connect(this.ctx.destination);
-            this.musicGain = this.ctx.createGain();
+            this.masterGain.connect(this.audioCtx.destination);
+            this.musicGain = this.audioCtx.createGain();
             this.musicGain.gain.value = 0.15;
             this.musicGain.connect(this.masterGain);
-        } catch(e) {}
+        } catch(e) {
+            console.warn('AudioContext initialization failed:', e.message);
+        }
     }
 
     setVolume(vol) {
@@ -171,11 +202,11 @@ class AudioEngine {
     }
 
     play(type) {
-        if (!this.settings.get('sfx') || !this.ctx) return;
-        if (this.ctx.state === 'suspended') this.ctx.resume();
-        const now = this.ctx.currentTime;
-        const osc = this.ctx.createOscillator();
-        const gain = this.ctx.createGain();
+        if (!this.settings.get('sfx') || !this.audioCtx) return;
+        if (this.audioCtx.state === 'suspended') this.audioCtx.resume();
+        const now = this.audioCtx.currentTime;
+        const osc = this.audioCtx.createOscillator();
+        const gain = this.audioCtx.createGain();
         osc.connect(gain);
         gain.connect(this.masterGain);
 
@@ -203,7 +234,7 @@ class AudioEngine {
                 osc.frequency.exponentialRampToValueAtTime(800, now + 0.2);
                 gain.gain.setValueAtTime(0.2, now); gain.gain.exponentialRampToValueAtTime(0.001, now + 0.25);
                 osc.start(now); osc.stop(now + 0.25);
-                const osc2 = this.ctx.createOscillator(); const gain2 = this.ctx.createGain();
+                const osc2 = this.audioCtx.createOscillator(); const gain2 = this.audioCtx.createGain();
                 osc2.connect(gain2); gain2.connect(this.masterGain);
                 osc2.type = 'sine'; osc2.frequency.setValueAtTime(600, now + 0.05);
                 osc2.frequency.exponentialRampToValueAtTime(1200, now + 0.25);
@@ -212,7 +243,7 @@ class AudioEngine {
             }
             case 'tetris': {
                 [523, 659, 784, 1047].forEach((freq, i) => {
-                    const o = this.ctx.createOscillator(); const g = this.ctx.createGain();
+                    const o = this.audioCtx.createOscillator(); const g = this.audioCtx.createGain();
                     o.connect(g); g.connect(this.masterGain); o.type = 'sine';
                     o.frequency.setValueAtTime(freq, now + i * 0.08);
                     g.gain.setValueAtTime(0.2, now + i * 0.08); g.gain.exponentialRampToValueAtTime(0.001, now + i * 0.08 + 0.2);
@@ -233,7 +264,7 @@ class AudioEngine {
                 osc.start(now); osc.stop(now + 0.1); break;
             case 'gameover': {
                 [400, 350, 300, 200, 150].forEach((freq, i) => {
-                    const o = this.ctx.createOscillator(); const g = this.ctx.createGain();
+                    const o = this.audioCtx.createOscillator(); const g = this.audioCtx.createGain();
                     o.connect(g); g.connect(this.masterGain); o.type = 'sawtooth';
                     o.frequency.setValueAtTime(freq, now + i * 0.15);
                     g.gain.setValueAtTime(0.15, now + i * 0.15); g.gain.exponentialRampToValueAtTime(0.001, now + i * 0.15 + 0.3);
@@ -242,7 +273,7 @@ class AudioEngine {
             }
             case 'levelup': {
                 [523, 659, 784, 1047, 1319].forEach((freq, i) => {
-                    const o = this.ctx.createOscillator(); const g = this.ctx.createGain();
+                    const o = this.audioCtx.createOscillator(); const g = this.audioCtx.createGain();
                     o.connect(g); g.connect(this.masterGain); o.type = 'triangle';
                     o.frequency.setValueAtTime(freq, now + i * 0.07);
                     g.gain.setValueAtTime(0.2, now + i * 0.07); g.gain.exponentialRampToValueAtTime(0.001, now + i * 0.07 + 0.15);
@@ -261,14 +292,14 @@ class AudioEngine {
     }
 
     startMusic() {
-        if (!this.ctx || !this.settings.get('music') || this.musicPlaying) return;
+        if (!this.audioCtx || !this.settings.get('music') || this.musicPlaying) return;
         this.musicPlaying = true;
         this._playMusicLoop();
     }
 
     _playMusicLoop() {
-        if (!this.musicPlaying || !this.ctx) return;
-        const now = this.ctx.currentTime;
+        if (!this.musicPlaying || !this.audioCtx) return;
+        const now = this.audioCtx.currentTime;
         const bpm = 128;
         const beatLen = 60 / bpm;
 
@@ -277,8 +308,8 @@ class AudioEngine {
         const loopLen = bassNotes.length * beatLen;
 
         bassNotes.forEach((freq, i) => {
-            const o = this.ctx.createOscillator();
-            const g = this.ctx.createGain();
+            const o = this.audioCtx.createOscillator();
+            const g = this.audioCtx.createGain();
             o.connect(g); g.connect(this.musicGain);
             o.type = 'sawtooth';
             o.frequency.setValueAtTime(freq, now + i * beatLen);
@@ -291,8 +322,8 @@ class AudioEngine {
         });
 
         // Pad
-        const padO = this.ctx.createOscillator();
-        const padG = this.ctx.createGain();
+        const padO = this.audioCtx.createOscillator();
+        const padG = this.audioCtx.createGain();
         padO.connect(padG); padG.connect(this.musicGain);
         padO.type = 'sine';
         padO.frequency.setValueAtTime(261.63, now);
@@ -306,7 +337,7 @@ class AudioEngine {
     stopMusic() {
         this.musicPlaying = false;
         clearTimeout(this._musicTimeout);
-        this.musicNodes.forEach(n => { try { n.stop(); } catch(e) {} });
+        this.musicNodes.forEach(node => { try { node.stop(); } catch(_) { /* node already stopped */ } });
         this.musicNodes = [];
     }
 }
@@ -442,13 +473,17 @@ class BagRandomizer {
 class NeonBlocks {
     constructor() {
         this.settingsManager = new SettingsManager();
-        this.canvas = document.getElementById('game-canvas');
+
+        // --- Cache DOM elements ---
+        this.dom = this._cacheDomElements();
+
+        this.canvas = this.dom.gameCanvas;
         this.ctx = this.canvas.getContext('2d');
 
-        this.bgCanvas = document.getElementById('bg-canvas');
+        this.bgCanvas = this.dom.bgCanvas;
         this.bgCtx = this.bgCanvas.getContext('2d');
 
-        this.confettiCanvas = document.getElementById('confetti-canvas');
+        this.confettiCanvas = this.dom.confettiCanvas;
         this.confetti = new ConfettiSystem(this.confettiCanvas);
 
         this.audio = new AudioEngine(this.settingsManager);
@@ -459,8 +494,6 @@ class NeonBlocks {
         this.gameMode = 'classic';
         this.modeTimer = 0;
         this.modeStartTime = 0;
-        this.sprintTarget = 40;
-        this.ultraDuration = 120000; // 2 minutes
 
         // State
         this.grid = [];
@@ -480,8 +513,6 @@ class NeonBlocks {
         this.lastDrop = 0;
         this.lockDelay = 0;
         this.lockMoves = 0;
-        this.MAX_LOCK_MOVES = 15;
-        this.LOCK_DELAY = 500;
         this.lastTspin = 'none';
         this.lineClearAnim = null;
         this.screenShake = 0;
@@ -490,40 +521,37 @@ class NeonBlocks {
         this.dangerPulse = 0;
         this.spawnAlpha = 1;
 
+        // Dirty flags for UI optimization
+        this._prevUI = { score: -1, level: -1, lines: -1, tspins: -1, tetrises: -1, maxCombo: -1 };
+
         // Player
         this.playerName = '';
 
         // DAS / ARR
-        this.das = 133;
-        this.arr = 10;
+        this.das = DEFAULT_DAS;
+        this.arr = DEFAULT_ARR;
         this.keys = {};
         this.dasTimer = {};
         this.arrTimer = {};
 
         // Mobile detect
-        this.isMobile = /Android|iPhone|iPad|iPod|webOS/i.test(navigator.userAgent) || window.innerWidth <= 768;
+        this.isMobile = /Android|iPhone|iPad|iPod|webOS/i.test(navigator.userAgent) || window.innerWidth <= MOBILE_BREAKPOINT;
 
         // Move settings button into HUD on mobile
-        if (this.isMobile || window.innerWidth <= 768) {
-            const settingsBtn = document.getElementById('settings-btn');
-            const hudSlot = document.getElementById('hud-settings-slot');
+        if (this.isMobile || window.innerWidth <= MOBILE_BREAKPOINT) {
+            const settingsBtn = this.dom.settingsBtn;
+            const hudSlot = this.dom.hudSettingsSlot;
             if (settingsBtn && hudSlot) {
                 hudSlot.appendChild(settingsBtn);
             }
         }
 
         // High scores
-        this.highScores = JSON.parse(localStorage.getItem('neonblocks_scores_v2') || '[]');
-        const oldScores = JSON.parse(localStorage.getItem('neonblocks_scores') || '[]');
-        if (oldScores.length > 0 && this.highScores.length === 0) {
-            this.highScores = oldScores.map(s => typeof s === 'number' ? { name: '???', score: s, level: 1, lines: 0 } : s);
-            localStorage.setItem('neonblocks_scores_v2', JSON.stringify(this.highScores));
-        }
+        this._loadHighScores();
 
         // Restore player name
         this.playerName = localStorage.getItem('neonblocks_player') || '';
-        const nameInput = document.getElementById('player-name-input');
-        if (this.playerName) nameInput.value = this.playerName;
+        if (this.playerName) this.dom.playerNameInput.value = this.playerName;
 
         // Apply settings
         this.applyColorblind();
@@ -545,7 +573,7 @@ class NeonBlocks {
         this.resizeBg();
 
         // Focus
-        setTimeout(() => nameInput.focus(), 100);
+        setTimeout(() => this.dom.playerNameInput.focus(), 100);
 
         this.lastTime = 0;
         this.animFrame = requestAnimationFrame(t => this.loop(t));
@@ -559,35 +587,109 @@ class NeonBlocks {
         setTimeout(() => { this.calculateCellSize(); }, 600);
     }
 
-    // --- Dynamic Cell Sizing ---
+    /** Cache all frequently used DOM element references to avoid per-frame lookups. */
+    _cacheDomElements() {
+        return {
+            gameCanvas: document.getElementById('game-canvas'),
+            bgCanvas: document.getElementById('bg-canvas'),
+            confettiCanvas: document.getElementById('confetti-canvas'),
+            gameContainer: document.getElementById('game-container'),
+            gameWrapper: document.getElementById('game-wrapper'),
+            // Overlays
+            startOverlay: document.getElementById('start-overlay'),
+            pauseOverlay: document.getElementById('pause-overlay'),
+            gameoverOverlay: document.getElementById('gameover-overlay'),
+            // HUD elements (updated every frame)
+            scoreDisplay: document.getElementById('score-display'),
+            levelDisplay: document.getElementById('level-display'),
+            linesDisplay: document.getElementById('lines-display'),
+            hudScore: document.getElementById('hud-score'),
+            hudLevel: document.getElementById('hud-level'),
+            hudLines: document.getElementById('hud-lines'),
+            tspinCount: document.getElementById('tspin-count'),
+            tetrisCount: document.getElementById('tetris-count'),
+            maxCombo: document.getElementById('max-combo'),
+            comboDisplay: document.getElementById('combo-display'),
+            modeTimer: document.getElementById('mode-timer'),
+            countdownDisplay: document.getElementById('countdown-display'),
+            // Player & controls
+            playerNameInput: document.getElementById('player-name-input'),
+            playerNameDisplay: document.getElementById('player-name-display'),
+            startBtn: document.getElementById('start-btn'),
+            resumeBtn: document.getElementById('resume-btn'),
+            restartBtn: document.getElementById('restart-btn'),
+            shareBtn: document.getElementById('share-btn'),
+            settingsBtn: document.getElementById('settings-btn'),
+            hudSettingsSlot: document.getElementById('hud-settings-slot'),
+            // Settings
+            settingsPanel: document.getElementById('settings-panel'),
+            settingsOverlay: document.getElementById('settings-overlay'),
+            settingsClose: document.getElementById('settings-close'),
+            volumeSlider: document.getElementById('volume-slider'),
+            // Game over stats
+            finalScore: document.getElementById('final-score'),
+            finalLevel: document.getElementById('final-level'),
+            finalLines: document.getElementById('final-lines'),
+            finalTspins: document.getElementById('final-tspins'),
+            finalTetrises: document.getElementById('final-tetrises'),
+            finalCombo: document.getElementById('final-combo'),
+            finalTime: document.getElementById('final-time'),
+            finalTimeLabel: document.getElementById('final-time-label'),
+            newHighscoreMsg: document.getElementById('new-highscore-msg'),
+            // Leaderboards
+            highscoreList: document.getElementById('highscore-list'),
+            mobileHighscoreList: document.getElementById('mobile-highscore-list'),
+            // Mobile
+            mobileControls: document.getElementById('mobile-controls'),
+            mobileHud: document.getElementById('mobile-hud'),
+            mobileLeaderboard: document.getElementById('mobile-leaderboard'),
+            lbToggle: document.getElementById('lb-toggle'),
+            // Mode
+            modeDesc: document.getElementById('mode-desc'),
+        };
+    }
+
+    /** Load high scores from localStorage, migrating old format if needed. */
+    _loadHighScores() {
+        try {
+            this.highScores = JSON.parse(localStorage.getItem('neonblocks_scores_v2') || '[]');
+        } catch(e) {
+            console.warn('Failed to parse high scores:', e.message);
+            this.highScores = [];
+        }
+        try {
+            const oldScores = JSON.parse(localStorage.getItem('neonblocks_scores') || '[]');
+            if (oldScores.length > 0 && this.highScores.length === 0) {
+                this.highScores = oldScores.map(s => typeof s === 'number' ? { name: '???', score: s, level: 1, lines: 0 } : s);
+                localStorage.setItem('neonblocks_scores_v2', JSON.stringify(this.highScores));
+            }
+        } catch(e) {
+            console.warn('Failed to migrate old scores:', e.message);
+        }
+    }
+
+    /** Recalculate cell size based on available viewport space. */
     calculateCellSize() {
         const vh = window.innerHeight;
         const vw = window.innerWidth;
-        const isMob = vw <= 768;
+        const isMob = vw <= MOBILE_BREAKPOINT;
 
         let availH, availW;
         if (isMob) {
-            // Measure actual controls/hud height, with generous fallbacks
-            const controlsEl = document.getElementById('mobile-controls');
-            const hudEl = document.getElementById('mobile-hud');
-            const lbEl = document.getElementById('mobile-leaderboard');
-            const controlsH = (controlsEl && controlsEl.offsetHeight > 0) ? controlsEl.offsetHeight : 200;
-            const hudH = (hudEl && hudEl.offsetHeight > 0) ? hudEl.offsetHeight : 55;
-            const lbH = (lbEl && lbEl.offsetHeight > 0) ? lbEl.offsetHeight : 30;
+            const controlsH = (this.dom.mobileControls && this.dom.mobileControls.offsetHeight > 0) ? this.dom.mobileControls.offsetHeight : 200;
+            const hudH = (this.dom.mobileHud && this.dom.mobileHud.offsetHeight > 0) ? this.dom.mobileHud.offsetHeight : 55;
+            const lbH = (this.dom.mobileLeaderboard && this.dom.mobileLeaderboard.offsetHeight > 0) ? this.dom.mobileLeaderboard.offsetHeight : 30;
             const safeMargin = 20;
 
-            // Account for safe areas
-            const safeTop = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--safe-top')) || 0;
-            const safeBottom = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--safe-bottom')) || 0;
+            const safeTop = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--safe-top'), 10) || 0;
+            const safeBottom = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--safe-bottom'), 10) || 0;
 
             availH = vh - hudH - controlsH - lbH - safeMargin - safeTop - safeBottom;
-            availW = vw - 16; // 8px padding each side
+            availW = vw - MOBILE_PADDING;
 
-            // Update game-wrapper padding to account for controls
-            const wrapper = document.getElementById('game-wrapper');
-            if (wrapper) {
-                wrapper.style.paddingTop = (hudH + 5) + 'px';
-                wrapper.style.paddingBottom = (controlsH + lbH + 5) + 'px';
+            if (this.dom.gameWrapper) {
+                this.dom.gameWrapper.style.paddingTop = (hudH + 5) + 'px';
+                this.dom.gameWrapper.style.paddingBottom = (controlsH + lbH + 5) + 'px';
             }
         } else {
             availH = vh - 60;
@@ -596,12 +698,11 @@ class NeonBlocks {
 
         const cellFromH = Math.floor(availH / ROWS);
         const cellFromW = Math.floor(availW / COLS);
-        CELL = Math.max(10, Math.min(BASE_CELL, cellFromH, cellFromW));
+        CELL = Math.max(MIN_CELL, Math.min(BASE_CELL, cellFromH, cellFromW));
 
         this.canvas.width = COLS * CELL;
         this.canvas.height = ROWS * CELL;
 
-        // Resize confetti canvas
         this.confettiCanvas.width = this.canvas.width;
         this.confettiCanvas.height = this.canvas.height;
     }
@@ -613,10 +714,10 @@ class NeonBlocks {
 
     // --- Settings Panel ---
     setupSettings() {
-        const panel = document.getElementById('settings-panel');
-        const overlay = document.getElementById('settings-overlay');
-        const btn = document.getElementById('settings-btn');
-        const closeBtn = document.getElementById('settings-close');
+        const panel = this.dom.settingsPanel;
+        const overlay = this.dom.settingsOverlay;
+        const btn = this.dom.settingsBtn;
+        const closeBtn = this.dom.settingsClose;
 
         const openSettings = (e) => {
             e.preventDefault();
@@ -632,7 +733,6 @@ class NeonBlocks {
             overlay.classList.remove('open');
         };
 
-        // Use both touch and click for reliable mobile support
         btn.addEventListener('touchend', openSettings, { passive: false });
         btn.addEventListener('click', openSettings);
         closeBtn.addEventListener('touchend', closeSettings, { passive: false });
@@ -640,12 +740,11 @@ class NeonBlocks {
         overlay.addEventListener('touchend', closeSettings, { passive: false });
         overlay.addEventListener('click', closeSettings);
 
-        // Volume slider - works with both touch drag and click
-        const volSlider = document.getElementById('volume-slider');
+        const volSlider = this.dom.volumeSlider;
         volSlider.value = this.settingsManager.get('volume');
         const handleVolume = () => {
-            const val = parseInt(volSlider.value);
-            this.settingsManager.set('volume', val);
+            const val = parseInt(volSlider.value, 10);
+            this.settingsManager.set('volume', Math.max(0, Math.min(100, val)));
             this.audio.setVolume(val);
         };
         volSlider.addEventListener('input', handleVolume);
@@ -683,20 +782,20 @@ class NeonBlocks {
 
     // --- Mode Selector ---
     setupModeSelector() {
-        const modeDesc = document.getElementById('mode-desc');
-        document.querySelectorAll('.mode-btn').forEach(btn => {
+        const modeBtns = document.querySelectorAll('.mode-btn');
+        modeBtns.forEach(btn => {
             btn.addEventListener('click', () => {
-                document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+                modeBtns.forEach(b => b.classList.remove('active'));
                 btn.classList.add('active');
                 this.gameMode = btn.dataset.mode;
-                modeDesc.textContent = MODE_DESCRIPTIONS[this.gameMode];
+                this.dom.modeDesc.textContent = MODE_DESCRIPTIONS[this.gameMode];
             });
         });
     }
 
     // --- Background ---
     initBackground() {
-        for (let i = 0; i < 60; i++) {
+        for (let i = 0; i < BG_STAR_COUNT; i++) {
             this.bgStars.push({
                 x: Math.random() * window.innerWidth,
                 y: Math.random() * window.innerHeight,
@@ -719,11 +818,10 @@ class NeonBlocks {
 
         ctx.strokeStyle = 'rgba(0, 240, 255, 0.03)';
         ctx.lineWidth = 1;
-        const gs = 40;
-        for (let x = 0; x < this.bgCanvas.width; x += gs) {
+        for (let x = 0; x < this.bgCanvas.width; x += BG_GRID_SPACING) {
             ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, this.bgCanvas.height); ctx.stroke();
         }
-        for (let y = 0; y < this.bgCanvas.height; y += gs) {
+        for (let y = 0; y < this.bgCanvas.height; y += BG_GRID_SPACING) {
             ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(this.bgCanvas.width, y); ctx.stroke();
         }
 
@@ -737,7 +835,7 @@ class NeonBlocks {
         });
     }
 
-    // --- Grid ---
+    /** Initialize an empty game grid with TOTAL_ROWS x COLS cells. */
     createGrid() {
         this.grid = Array.from({ length: TOTAL_ROWS }, () => Array(COLS).fill(null));
     }
@@ -754,7 +852,11 @@ class NeonBlocks {
         return 0;
     }
 
-    // --- Pieces ---
+    /**
+     * Spawn a new falling piece from the queue (or a specific type).
+     * @param {string} [type] - Piece type to spawn; uses next from queue if omitted.
+     * @returns {object|null} The spawned piece, or null if game over.
+     */
     spawnPiece(type) {
         if (!type) type = this.nextPieces.shift();
         while (this.nextPieces.length < 5) this.nextPieces.push(this.randomizer.next());
@@ -781,6 +883,14 @@ class NeonBlocks {
         return piece;
     }
 
+    /**
+     * Check if a piece placement is valid (no collisions, within bounds).
+     * @param {object} piece - The piece to validate.
+     * @param {number[][]} [shape] - Shape override (defaults to piece.shape).
+     * @param {number} [x] - X position override (defaults to piece.x).
+     * @param {number} [y] - Y position override (defaults to piece.y).
+     * @returns {boolean}
+     */
     isValid(piece, shape, x, y) {
         shape = shape || piece.shape;
         x = x !== undefined ? x : piece.x;
@@ -799,6 +909,7 @@ class NeonBlocks {
         return true;
     }
 
+    /** Move the current piece by (dx, dy). Returns true if successful. */
     movePiece(dx, dy) {
         const p = this.currentPiece;
         if (!p) return false;
@@ -811,6 +922,7 @@ class NeonBlocks {
         return false;
     }
 
+    /** Rotate the current piece. @param {number} dir - 1=CW, -1=CCW, 2=180° */
     rotatePiece(dir = 1) {
         const p = this.currentPiece;
         if (!p || p.type === 'O') return false;
@@ -878,9 +990,10 @@ class NeonBlocks {
     }
 
     resetLockDelay() {
-        if (this.lockMoves < this.MAX_LOCK_MOVES) { this.lockDelay = 0; this.lockMoves++; }
+        if (this.lockMoves < MAX_LOCK_MOVES) { this.lockDelay = 0; this.lockMoves++; }
     }
 
+    /** Instantly drop the current piece to the bottom and lock it. */
     hardDrop() {
         const p = this.currentPiece;
         if (!p) return;
@@ -934,6 +1047,7 @@ class NeonBlocks {
         this.updateHoldDisplay();
     }
 
+    /** Lock the current piece into the grid and trigger line clears. */
     lockPiece() {
         const p = this.currentPiece;
         if (!p) return;
@@ -989,6 +1103,7 @@ class NeonBlocks {
         while (this.grid.length < TOTAL_ROWS) this.grid.unshift(Array(COLS).fill(null));
     }
 
+    /** Calculate and apply score from cleared lines, combos, T-spins, and back-to-back. */
     processScoring(clearedRows) {
         const numLines = clearedRows.length;
         if (numLines === 0) { this.combo = -1; this.updateComboDisplay(); return; }
@@ -1039,12 +1154,12 @@ class NeonBlocks {
         this.lines += numLines;
 
         // Sprint check
-        if (this.gameMode === 'sprint' && this.lines >= this.sprintTarget) {
+        if (this.gameMode === 'sprint' && this.lines >= SPRINT_TARGET) {
             this.gameOver(true);
             return;
         }
 
-        const newLevel = Math.floor(this.lines / 10) + 1;
+        const newLevel = Math.floor(this.lines / LINES_PER_LEVEL) + 1;
         if (newLevel > this.level) {
             this.level = newLevel;
             this.audio.play('levelup');
@@ -1057,7 +1172,7 @@ class NeonBlocks {
     }
 
     showScorePopup(text, color) {
-        const container = document.getElementById('game-container');
+        const container = this.dom.gameContainer;
         const el = document.createElement('div');
         el.className = 'score-popup'; el.textContent = text; el.style.color = color;
         el.style.left = (20 + Math.random() * 60) + '%';
@@ -1067,17 +1182,17 @@ class NeonBlocks {
         setTimeout(() => el.remove(), 1200);
     }
 
-    // --- Haptic Feedback ---
+    /** Trigger haptic feedback on supported devices. */
     haptic(ms = 10) {
         if (this.settingsManager.get('haptic') && navigator.vibrate) {
-            try { navigator.vibrate(ms); } catch(e) {}
+            try { navigator.vibrate(ms); } catch(_) { /* vibration not available */ }
         }
     }
 
     // --- Countdown ---
     startCountdown(callback) {
-        const display = document.getElementById('countdown-display');
-        let count = 3;
+        const display = this.dom.countdownDisplay;
+        let count = COUNTDOWN_START;
         display.classList.add('visible');
 
         const tick = () => {
@@ -1101,7 +1216,7 @@ class NeonBlocks {
         tick();
     }
 
-    // --- Game Over ---
+    /** End the current game, save scores, and show game-over overlay. */
     gameOver(isWin = false) {
         this.gameState = 'gameover';
         this.audio.stopMusic();
@@ -1124,41 +1239,37 @@ class NeonBlocks {
         localStorage.setItem('neonblocks_scores_v2', JSON.stringify(this.highScores));
         this.updateHighScoreDisplay();
 
-        document.getElementById('final-score').textContent = this.score.toLocaleString();
-        document.getElementById('final-level').textContent = this.level;
-        document.getElementById('final-lines').textContent = this.lines;
-        document.getElementById('final-tspins').textContent = this.tspinCount;
-        document.getElementById('final-tetrises').textContent = this.tetrisCount;
-        document.getElementById('final-combo').textContent = this.maxCombo;
+        this.dom.finalScore.textContent = this.score.toLocaleString();
+        this.dom.finalLevel.textContent = this.level;
+        this.dom.finalLines.textContent = this.lines;
+        this.dom.finalTspins.textContent = this.tspinCount;
+        this.dom.finalTetrises.textContent = this.tetrisCount;
+        this.dom.finalCombo.textContent = this.maxCombo;
 
         // Show time for sprint/ultra
         if (this.gameMode !== 'classic') {
-            document.getElementById('final-time-label').style.display = '';
-            document.getElementById('final-time').style.display = '';
+            this.dom.finalTimeLabel.style.display = '';
+            this.dom.finalTime.style.display = '';
             const secs = Math.floor(elapsed / 1000);
             const ms = elapsed % 1000;
-            document.getElementById('final-time').textContent = `${Math.floor(secs/60)}:${(secs%60).toString().padStart(2,'0')}.${ms.toString().padStart(3,'0').slice(0,2)}`;
+            this.dom.finalTime.textContent = `${Math.floor(secs/60)}:${(secs%60).toString().padStart(2,'0')}.${ms.toString().padStart(3,'0').slice(0,2)}`;
         } else {
-            document.getElementById('final-time-label').style.display = 'none';
-            document.getElementById('final-time').style.display = 'none';
+            this.dom.finalTimeLabel.style.display = 'none';
+            this.dom.finalTime.style.display = 'none';
         }
 
-        const hsMsg = document.getElementById('new-highscore-msg');
         if (isNewHighscore && this.score > 0) {
-            hsMsg.style.display = 'block';
+            this.dom.newHighscoreMsg.style.display = 'block';
             this.confetti.burst(80);
         } else {
-            hsMsg.style.display = 'none';
+            this.dom.newHighscoreMsg.style.display = 'none';
         }
 
         // Sprint win message
-        if (isWin && this.gameMode === 'sprint') {
-            document.getElementById('gameover-overlay').querySelector('h2').textContent = 'GESCHAFFT!';
-        } else {
-            document.getElementById('gameover-overlay').querySelector('h2').textContent = 'GAME OVER';
-        }
+        const heading = this.dom.gameoverOverlay.querySelector('h2');
+        heading.textContent = (isWin && this.gameMode === 'sprint') ? 'GESCHAFFT!' : 'GAME OVER';
 
-        document.getElementById('gameover-overlay').classList.remove('hidden');
+        this.dom.gameoverOverlay.classList.remove('hidden');
     }
 
     // --- Share ---
@@ -1170,25 +1281,29 @@ class NeonBlocks {
             navigator.share({ title: 'NEON BLOCKS Score', text }).catch(() => {});
         } else if (navigator.clipboard) {
             navigator.clipboard.writeText(text).then(() => {
-                const btn = document.getElementById('share-btn');
-                btn.textContent = '\u2713 KOPIERT!';
-                setTimeout(() => { btn.innerHTML = '&#128279; SCORE TEILEN'; }, 2000);
+                this.dom.shareBtn.textContent = '\u2713 KOPIERT!';
+                setTimeout(() => { this.dom.shareBtn.textContent = '\u{1F517} SCORE TEILEN'; }, 2000);
             }).catch(() => {});
         }
     }
 
+    /** Sanitize a raw player name input into a valid display name. */
+    _sanitizePlayerName(raw) {
+        const trimmed = (raw || '').trim().toUpperCase().slice(0, MAX_PLAYER_NAME_LENGTH);
+        return trimmed || DEFAULT_PLAYER_NAME;
+    }
+
     // --- Start / Restart ---
     startGame() {
-        const nameInput = document.getElementById('player-name-input');
-        this.playerName = (nameInput.value || '').trim().toUpperCase().slice(0, 10) || 'ANONYM';
+        this.playerName = this._sanitizePlayerName(this.dom.playerNameInput.value);
         localStorage.setItem('neonblocks_player', this.playerName);
-        document.getElementById('player-name-display').textContent = this.playerName;
+        this.dom.playerNameDisplay.textContent = this.playerName;
 
         this.audio.init();
 
-        document.getElementById('start-overlay').classList.add('hidden');
-        document.getElementById('gameover-overlay').classList.add('hidden');
-        document.getElementById('pause-overlay').classList.add('hidden');
+        this.dom.startOverlay.classList.add('hidden');
+        this.dom.gameoverOverlay.classList.add('hidden');
+        this.dom.pauseOverlay.classList.add('hidden');
 
         // Countdown then start
         this.gameState = 'countdown';
@@ -1217,36 +1332,37 @@ class NeonBlocks {
         this.randomizer = new BagRandomizer();
         this.particles = new ParticleSystem();
 
+        // Reset dirty flags so UI updates on first frame
+        this._prevUI = { score: -1, level: -1, lines: -1, tspins: -1, tetrises: -1, maxCombo: -1 };
+
         for (let i = 0; i < 5; i++) this.nextPieces.push(this.randomizer.next());
         this.spawnPiece();
         this.updateUI();
         this.updateHoldDisplay();
         this.updateComboDisplay();
-        document.getElementById('tspin-count').textContent = '0';
-        document.getElementById('tetris-count').textContent = '0';
-        document.getElementById('max-combo').textContent = '0';
-        document.getElementById('mode-timer').textContent = '';
+        this.dom.tspinCount.textContent = '0';
+        this.dom.tetrisCount.textContent = '0';
+        this.dom.maxCombo.textContent = '0';
+        this.dom.modeTimer.textContent = '';
     }
 
     togglePause() {
         if (this.gameState === 'playing') {
             this.gameState = 'paused';
             this.audio.stopMusic();
-            document.getElementById('pause-overlay').classList.remove('hidden');
+            this.dom.pauseOverlay.classList.remove('hidden');
         } else if (this.gameState === 'paused') {
             this.gameState = 'playing';
             this.lastDrop = performance.now();
             this.audio.startMusic();
-            document.getElementById('pause-overlay').classList.add('hidden');
+            this.dom.pauseOverlay.classList.add('hidden');
         }
     }
 
     // --- Controls ---
     setupControls() {
-        const nameInput = document.getElementById('player-name-input');
-        const startBtn = document.getElementById('start-btn');
-        const resumeBtn = document.getElementById('resume-btn');
-        const shareBtn = document.getElementById('share-btn');
+        const nameInput = this.dom.playerNameInput;
+        const startBtn = this.dom.startBtn;
 
         const updateStartBtn = () => { startBtn.disabled = nameInput.value.trim().length === 0; };
         nameInput.addEventListener('input', updateStartBtn);
@@ -1310,9 +1426,9 @@ class NeonBlocks {
         });
 
         startBtn.addEventListener('click', () => { if (nameInput.value.trim().length > 0) this.startGame(); });
-        document.getElementById('restart-btn').addEventListener('click', () => this.startGame());
-        resumeBtn.addEventListener('click', () => this.togglePause());
-        shareBtn.addEventListener('click', () => this.shareScore());
+        this.dom.restartBtn.addEventListener('click', () => this.startGame());
+        this.dom.resumeBtn.addEventListener('click', () => this.togglePause());
+        this.dom.shareBtn.addEventListener('click', () => this.shareScore());
     }
 
     setupMobileControls() {
@@ -1433,81 +1549,120 @@ class NeonBlocks {
         if (this.keys['ArrowDown']) this.softDrop();
     }
 
-    // --- UI Updates ---
+    /** Update score/level/lines displays, but only when values have actually changed. */
     updateUI() {
-        const scoreStr = this.score.toLocaleString();
-        document.getElementById('score-display').textContent = scoreStr;
-        document.getElementById('level-display').textContent = this.level;
-        document.getElementById('lines-display').textContent = this.lines;
-        document.getElementById('tspin-count').textContent = this.tspinCount;
-        document.getElementById('tetris-count').textContent = this.tetrisCount;
-        document.getElementById('max-combo').textContent = this.maxCombo;
+        const prev = this._prevUI;
 
-        // Mobile HUD
-        const hudScore = document.getElementById('hud-score');
-        const hudLevel = document.getElementById('hud-level');
-        const hudLines = document.getElementById('hud-lines');
-        if (hudScore) hudScore.textContent = scoreStr;
-        if (hudLevel) hudLevel.textContent = this.level;
-        if (hudLines) hudLines.textContent = this.lines;
+        if (prev.score !== this.score) {
+            prev.score = this.score;
+            const scoreStr = this.score.toLocaleString();
+            this.dom.scoreDisplay.textContent = scoreStr;
+            if (this.dom.hudScore) this.dom.hudScore.textContent = scoreStr;
+        }
+        if (prev.level !== this.level) {
+            prev.level = this.level;
+            this.dom.levelDisplay.textContent = this.level;
+            if (this.dom.hudLevel) this.dom.hudLevel.textContent = this.level;
+        }
+        if (prev.lines !== this.lines) {
+            prev.lines = this.lines;
+            this.dom.linesDisplay.textContent = this.lines;
+            if (this.dom.hudLines) this.dom.hudLines.textContent = this.lines;
+        }
+        if (prev.tspins !== this.tspinCount) {
+            prev.tspins = this.tspinCount;
+            this.dom.tspinCount.textContent = this.tspinCount;
+        }
+        if (prev.tetrises !== this.tetrisCount) {
+            prev.tetrises = this.tetrisCount;
+            this.dom.tetrisCount.textContent = this.tetrisCount;
+        }
+        if (prev.maxCombo !== this.maxCombo) {
+            prev.maxCombo = this.maxCombo;
+            this.dom.maxCombo.textContent = this.maxCombo;
+        }
     }
 
     updateComboDisplay() {
-        const el = document.getElementById('combo-display');
-        el.textContent = this.combo > 0 ? `${this.combo}x COMBO` : '';
+        this.dom.comboDisplay.textContent = this.combo > 0 ? `${this.combo}x COMBO` : '';
+    }
+
+    /** Format milliseconds as M:SS.cc timer string. */
+    _formatTimer(ms) {
+        const secs = Math.floor(ms / 1000);
+        const centisecs = Math.floor((ms % 1000) / 10);
+        return `${Math.floor(secs/60)}:${(secs%60).toString().padStart(2,'0')}.${centisecs.toString().padStart(2,'0')}`;
     }
 
     updateModeTimer() {
         if (this.gameState !== 'playing') return;
         const elapsed = Date.now() - this.modeStartTime;
-        const timerEl = document.getElementById('mode-timer');
+        const timerEl = this.dom.modeTimer;
 
         if (this.gameMode === 'sprint') {
-            const secs = Math.floor(elapsed / 1000);
-            const ms = Math.floor((elapsed % 1000) / 10);
-            timerEl.textContent = `${Math.floor(secs/60)}:${(secs%60).toString().padStart(2,'0')}.${ms.toString().padStart(2,'0')}`;
+            timerEl.textContent = this._formatTimer(elapsed);
             timerEl.style.color = '#00ff6a';
         } else if (this.gameMode === 'ultra') {
-            const remaining = Math.max(0, this.ultraDuration - elapsed);
+            const remaining = Math.max(0, ULTRA_DURATION_MS - elapsed);
             if (remaining <= 0) { this.gameOver(); return; }
-            const secs = Math.floor(remaining / 1000);
-            const ms = Math.floor((remaining % 1000) / 10);
-            timerEl.textContent = `${Math.floor(secs/60)}:${(secs%60).toString().padStart(2,'0')}.${ms.toString().padStart(2,'0')}`;
+            timerEl.textContent = this._formatTimer(remaining);
             timerEl.style.color = remaining < 10000 ? '#ff0044' : remaining < 30000 ? '#ffe600' : '#00ff6a';
         } else {
             timerEl.textContent = '';
         }
     }
 
+    /** Check if an entry is a valid high-score object (not null/array). */
+    _isScoreEntry(entry) {
+        return typeof entry === 'object' && entry !== null && !Array.isArray(entry);
+    }
+
     updateHighScoreDisplay() {
-        // Update both desktop and mobile leaderboards
-        const lists = [
-            document.getElementById('highscore-list'),
-            document.getElementById('mobile-highscore-list')
-        ];
+        const lists = [this.dom.highscoreList, this.dom.mobileHighscoreList];
 
         lists.forEach(list => {
             if (!list) return;
-            list.innerHTML = '';
+            // Clear all children safely (no innerHTML)
+            while (list.firstChild) list.removeChild(list.firstChild);
+
             if (this.highScores.length === 0) {
-                list.innerHTML = '<li><span style="color:rgba(255,255,255,0.3)">Noch keine Scores</span></li>';
+                const li = document.createElement('li');
+                const span = document.createElement('span');
+                span.style.color = 'rgba(255,255,255,0.3)';
+                span.textContent = 'Noch keine Scores';
+                li.appendChild(span);
+                list.appendChild(li);
                 return;
             }
             this.highScores.slice(0, 10).forEach((entry, i) => {
                 const li = document.createElement('li');
-                const name = typeof entry === 'object' ? entry.name : '???';
-                const score = typeof entry === 'object' ? entry.score : entry;
-                const level = typeof entry === 'object' ? (entry.level || '-') : '-';
-                const lines = typeof entry === 'object' ? (entry.lines || '-') : '-';
-                li.innerHTML = `<span class="hs-rank">#${i + 1}</span><span class="hs-name">${this.escapeHtml(name)}</span><span class="hs-score">${score.toLocaleString()}</span>`;
+                const isObj = this._isScoreEntry(entry);
+                const name = isObj ? entry.name : '???';
+                const score = isObj ? entry.score : entry;
+
+                const rankSpan = document.createElement('span');
+                rankSpan.className = 'hs-rank';
+                rankSpan.textContent = `#${i + 1}`;
+
+                const nameSpan = document.createElement('span');
+                nameSpan.className = 'hs-name';
+                nameSpan.textContent = name;
+
+                const scoreSpan = document.createElement('span');
+                scoreSpan.className = 'hs-score';
+                scoreSpan.textContent = score.toLocaleString();
+
+                li.appendChild(rankSpan);
+                li.appendChild(nameSpan);
+                li.appendChild(scoreSpan);
                 list.appendChild(li);
             });
         });
     }
 
     setupMobileLeaderboard() {
-        const toggle = document.getElementById('lb-toggle');
-        const lb = document.getElementById('mobile-leaderboard');
+        const toggle = this.dom.lbToggle;
+        const lb = this.dom.mobileLeaderboard;
         if (!toggle || !lb) return;
 
         const handleToggle = (e) => {
@@ -1517,12 +1672,6 @@ class NeonBlocks {
         };
         toggle.addEventListener('touchend', handleToggle, { passive: false });
         toggle.addEventListener('click', handleToggle);
-    }
-
-    escapeHtml(str) {
-        const div = document.createElement('div');
-        div.textContent = str;
-        return div.innerHTML;
     }
 
     // --- Preview Canvases ---
@@ -1661,7 +1810,7 @@ class NeonBlocks {
         const ctx = this.ctx, color = COLORS[p.type];
 
         // Spawn fade-in
-        if (this.spawnAlpha < 1) this.spawnAlpha = Math.min(1, this.spawnAlpha + 0.1);
+        if (this.spawnAlpha < 1) this.spawnAlpha = Math.min(1, this.spawnAlpha + SPAWN_FADE_SPEED);
 
         // Ghost piece
         if (this.settingsManager.get('ghost')) {
@@ -1703,7 +1852,7 @@ class NeonBlocks {
         }
     }
 
-    // --- Main Loop ---
+    /** Main game loop - handles physics, input, animation, and rendering. */
     loop(time) {
         const dt = time - this.lastTime;
         this.lastTime = time;
@@ -1716,14 +1865,14 @@ class NeonBlocks {
             if (time - this.lastDrop >= interval) {
                 if (!this.movePiece(0, 1)) {
                     this.lockDelay += interval;
-                    if (this.lockDelay >= this.LOCK_DELAY) this.lockPiece();
+                    if (this.lockDelay >= LOCK_DELAY_MS) this.lockPiece();
                 } else { this.lockDelay = 0; }
                 this.lastDrop = time;
             }
 
             if (this.currentPiece && !this.isValid(this.currentPiece, this.currentPiece.shape, this.currentPiece.x, this.currentPiece.y + 1)) {
                 this.lockDelay += dt;
-                if (this.lockDelay >= this.LOCK_DELAY) this.lockPiece();
+                if (this.lockDelay >= LOCK_DELAY_MS) this.lockPiece();
             }
 
             if (this.lineClearAnim) {
