@@ -668,7 +668,7 @@ class GameBoard {
             case 0: return [[cx-1,cy-1],[cx+1,cy-1]];
             case 1: return [[cx+1,cy-1],[cx+1,cy+1]];
             case 2: return [[cx-1,cy+1],[cx+1,cy+1]];
-            case 3: return [[cx-1,cy-1],[cx-1,cy+1]];
+            default: return [[cx-1,cy-1],[cx-1,cy+1]];
         }
     }
 
@@ -1534,12 +1534,14 @@ class NeonBlocks {
 
         ctx.strokeStyle = `rgba(${tr}, ${tg}, ${tb}, 0.03)`;
         ctx.lineWidth = 1;
+        ctx.beginPath();
         for (let x = 0; x < this.bgCanvas.width; x += BG_GRID_SPACING) {
-            ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, this.bgCanvas.height); ctx.stroke();
+            ctx.moveTo(x, 0); ctx.lineTo(x, this.bgCanvas.height);
         }
         for (let y = 0; y < this.bgCanvas.height; y += BG_GRID_SPACING) {
-            ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(this.bgCanvas.width, y); ctx.stroke();
+            ctx.moveTo(0, y); ctx.lineTo(this.bgCanvas.width, y);
         }
+        ctx.stroke();
 
         this.bgStars.forEach(star => {
             star.y += star.speed;
@@ -1701,7 +1703,7 @@ class NeonBlocks {
             case 0: return [[cx-1,cy-1],[cx+1,cy-1]];
             case 1: return [[cx+1,cy-1],[cx+1,cy+1]];
             case 2: return [[cx-1,cy+1],[cx+1,cy+1]];
-            case 3: return [[cx-1,cy-1],[cx-1,cy+1]];
+            default: return [[cx-1,cy-1],[cx-1,cy+1]];
         }
     }
 
@@ -2469,11 +2471,13 @@ class NeonBlocks {
             });
         }
 
-        // Grid lines
+        // Grid lines (batched into single path)
         ctx.strokeStyle = 'rgba(255,255,255,0.04)';
         ctx.lineWidth = 0.5;
-        for (let x = 0; x <= COLS; x++) { ctx.beginPath(); ctx.moveTo(x*CELL, 0); ctx.lineTo(x*CELL, ROWS*CELL); ctx.stroke(); }
-        for (let y = 0; y <= ROWS; y++) { ctx.beginPath(); ctx.moveTo(0, y*CELL); ctx.lineTo(COLS*CELL, y*CELL); ctx.stroke(); }
+        ctx.beginPath();
+        for (let x = 0; x <= COLS; x++) { ctx.moveTo(x*CELL, 0); ctx.lineTo(x*CELL, ROWS*CELL); }
+        for (let y = 0; y <= ROWS; y++) { ctx.moveTo(0, y*CELL); ctx.lineTo(COLS*CELL, y*CELL); }
+        ctx.stroke();
 
         // Danger zone
         const danger = board.getDangerLevel();
@@ -3049,14 +3053,16 @@ class NeonBlocks {
         ctx.save();
         ctx.globalAlpha = alpha;
 
-        // Base fill
+        // Base fill with glow (shadowBlur is expensive - only use for larger cells)
         ctx.fillStyle = color.fill;
-        ctx.shadowColor = color.glow;
-        ctx.shadowBlur = size > 14 ? 8 : 4;
+        if (size > 14) {
+            ctx.shadowColor = color.glow;
+            ctx.shadowBlur = 8;
+        }
         ctx.fillRect(x + 1, y + 1, size - 2, size - 2);
+        ctx.shadowBlur = 0;
 
         // Gradient overlay
-        ctx.shadowBlur = 0;
         const grad = ctx.createLinearGradient(x, y, x, y + size);
         grad.addColorStop(0, 'rgba(255,255,255,0.25)');
         grad.addColorStop(0.5, 'rgba(255,255,255,0.05)');
@@ -3101,11 +3107,13 @@ class NeonBlocks {
         const ctx = this.ctx;
         if (!this.grid || this.grid.length === 0) return;
 
-        // Grid lines
+        // Grid lines (batched into single path for fewer draw calls)
         ctx.strokeStyle = 'rgba(255,255,255,0.04)';
         ctx.lineWidth = 0.5;
-        for (let x = 0; x <= COLS; x++) { ctx.beginPath(); ctx.moveTo(x*CELL, 0); ctx.lineTo(x*CELL, ROWS*CELL); ctx.stroke(); }
-        for (let y = 0; y <= ROWS; y++) { ctx.beginPath(); ctx.moveTo(0, y*CELL); ctx.lineTo(COLS*CELL, y*CELL); ctx.stroke(); }
+        ctx.beginPath();
+        for (let x = 0; x <= COLS; x++) { ctx.moveTo(x*CELL, 0); ctx.lineTo(x*CELL, ROWS*CELL); }
+        for (let y = 0; y <= ROWS; y++) { ctx.moveTo(0, y*CELL); ctx.lineTo(COLS*CELL, y*CELL); }
+        ctx.stroke();
 
         // Danger zone pulse
         const danger = this.getDangerLevel();
@@ -3282,7 +3290,6 @@ class NeonBlocks {
 
             this._renderVsBoard(this.vsBoards[0], 0, 'rgba(0,240,255,0.3)');
             this._renderVsBoard(this.vsBoards[1], p2Offset, 'rgba(255,0,170,0.3)');
-            this.confetti.update();
             return;
         }
 
