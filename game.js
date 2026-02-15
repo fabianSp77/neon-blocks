@@ -543,6 +543,9 @@ class NeonBlocks {
         // Resize handler
         window.addEventListener('resize', () => { this.calculateCellSize(); this.resizeBg(); });
         window.addEventListener('orientationchange', () => { setTimeout(() => { this.calculateCellSize(); this.resizeBg(); }, 200); });
+
+        // Recalculate after layout is fully settled (for mobile controls height)
+        setTimeout(() => { this.calculateCellSize(); }, 300);
     }
 
     // --- Dynamic Cell Sizing ---
@@ -553,11 +556,21 @@ class NeonBlocks {
 
         let availH, availW;
         if (isMob) {
-            const hudH = 50;
-            const controlsH = 190;
-            const padding = 20;
-            availH = vh - hudH - controlsH - padding;
+            // Measure actual controls/hud height, with generous fallbacks
+            const controlsEl = document.getElementById('mobile-controls');
+            const hudEl = document.getElementById('mobile-hud');
+            const controlsH = (controlsEl && controlsEl.offsetHeight > 0) ? controlsEl.offsetHeight : 230;
+            const hudH = (hudEl && hudEl.offsetHeight > 0) ? hudEl.offsetHeight : 55;
+            const safeMargin = 30;
+            availH = vh - hudH - controlsH - safeMargin;
             availW = vw - 10;
+
+            // Update game-wrapper padding to account for controls
+            const wrapper = document.getElementById('game-wrapper');
+            if (wrapper) {
+                wrapper.style.paddingTop = (hudH + 5) + 'px';
+                wrapper.style.paddingBottom = (controlsH + 10) + 'px';
+            }
         } else {
             availH = vh - 60;
             availW = vw * 0.4;
@@ -565,7 +578,7 @@ class NeonBlocks {
 
         const cellFromH = Math.floor(availH / ROWS);
         const cellFromW = Math.floor(availW / COLS);
-        CELL = Math.max(16, Math.min(BASE_CELL, cellFromH, cellFromW));
+        CELL = Math.max(12, Math.min(BASE_CELL, cellFromH, cellFromW));
 
         this.canvas.width = COLS * CELL;
         this.canvas.height = ROWS * CELL;
@@ -856,6 +869,7 @@ class NeonBlocks {
         if (this.movePiece(0, 1)) {
             this.score += SOFT_DROP_SCORE;
             this.lastDrop = performance.now();
+            this.updateUI();
             return true;
         }
         return false;
