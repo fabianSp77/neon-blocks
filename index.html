@@ -221,18 +221,25 @@
         .settings-slider {
             width: 100%;
             -webkit-appearance: none;
-            height: 4px;
+            height: 6px;
             background: rgba(0, 240, 255, 0.2);
-            border-radius: 2px;
+            border-radius: 3px;
             outline: none;
+            touch-action: manipulation;
         }
         .settings-slider::-webkit-slider-thumb {
             -webkit-appearance: none;
-            width: 18px; height: 18px;
+            width: 28px; height: 28px;
             background: var(--neon-cyan);
             border-radius: 50%;
             cursor: pointer;
             box-shadow: 0 0 10px var(--neon-cyan);
+        }
+        .settings-toggle {
+            min-height: 44px;
+        }
+        .settings-toggle label {
+            flex: 1;
         }
 
         .settings-toggle {
@@ -243,13 +250,16 @@
         }
 
         .toggle-switch {
-            width: 44px; height: 24px;
+            width: 50px; height: 28px;
             background: rgba(255,255,255,0.1);
-            border-radius: 12px;
+            border-radius: 14px;
             position: relative;
             cursor: pointer;
             transition: background 0.3s;
             border: 1px solid rgba(255,255,255,0.2);
+            touch-action: manipulation;
+            -webkit-tap-highlight-color: transparent;
+            flex-shrink: 0;
         }
         .toggle-switch.active {
             background: rgba(0, 240, 255, 0.3);
@@ -257,21 +267,28 @@
         }
         .toggle-switch::after {
             content: '';
-            width: 18px; height: 18px;
+            width: 22px; height: 22px;
             background: #fff;
             border-radius: 50%;
             position: absolute;
             top: 2px; left: 2px;
             transition: transform 0.3s;
         }
-        .toggle-switch.active::after { transform: translateX(20px); background: var(--neon-cyan); }
+        .toggle-switch.active::after { transform: translateX(22px); background: var(--neon-cyan); }
 
         .settings-close {
             position: absolute;
-            top: 15px; right: 15px;
-            background: none; border: none;
-            color: rgba(255,255,255,0.5);
-            font-size: 24px; cursor: pointer;
+            top: 10px; right: 10px;
+            background: rgba(255,255,255,0.05);
+            border: 1px solid rgba(255,255,255,0.15);
+            border-radius: 8px;
+            color: rgba(255,255,255,0.6);
+            font-size: 24px;
+            cursor: pointer;
+            width: 40px; height: 40px;
+            display: flex; align-items: center; justify-content: center;
+            touch-action: manipulation;
+            -webkit-tap-highlight-color: transparent;
         }
 
         /* ===== Overlays ===== */
@@ -522,45 +539,99 @@
             display: none;
             position: fixed;
             top: 0; left: 0; right: 0;
-            padding: 4px 8px;
-            padding-top: calc(4px + var(--safe-top));
+            padding: 6px 6px 4px 6px;
+            padding-top: calc(6px + var(--safe-top));
             z-index: 50;
-            background: rgba(10, 10, 30, 0.9);
-            backdrop-filter: blur(10px);
-            border-bottom: 1px solid rgba(0, 240, 255, 0.15);
+            background: rgba(5, 5, 20, 0.95);
+            backdrop-filter: blur(12px);
+            border-bottom: 1px solid rgba(0, 240, 255, 0.2);
+            box-shadow: 0 2px 20px rgba(0, 240, 255, 0.08);
         }
 
         .hud-row {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            gap: 6px;
+            gap: 2px;
         }
 
         .hud-item {
             text-align: center;
-            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-width: 0;
+        }
+
+        .hud-item.hud-piece {
+            flex: 0 0 auto;
+            width: 50px;
+        }
+
+        .hud-item.hud-stat {
+            flex: 1 1 0;
         }
 
         .hud-label {
             font-family: 'Orbitron', sans-serif;
-            font-size: 8px;
+            font-size: 7px;
             color: var(--neon-cyan);
             text-transform: uppercase;
             letter-spacing: 1px;
-            opacity: 0.7;
+            opacity: 0.8;
+            white-space: nowrap;
+            line-height: 1;
+            margin-bottom: 2px;
         }
 
         .hud-value {
             font-family: 'Orbitron', sans-serif;
-            font-size: 14px;
+            font-size: 13px;
             color: #fff;
             text-shadow: 0 0 8px rgba(255,255,255,0.3);
+            line-height: 1.1;
+            white-space: nowrap;
         }
 
         .hud-mini-canvas {
             display: block;
             margin: 0 auto;
+        }
+
+        /* Mobile Leaderboard */
+        #mobile-leaderboard {
+            display: none;
+            position: fixed;
+            bottom: 0; left: 0; right: 0;
+            z-index: 45;
+        }
+
+        #mobile-leaderboard .lb-toggle {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            padding: 4px 0;
+            background: rgba(5, 5, 20, 0.9);
+            border-top: 1px solid rgba(0, 240, 255, 0.15);
+            cursor: pointer;
+            font-family: 'Orbitron', sans-serif;
+            font-size: 9px;
+            color: var(--neon-cyan);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        #mobile-leaderboard .lb-content {
+            display: none;
+            background: rgba(5, 5, 20, 0.95);
+            padding: 8px 12px;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
+        #mobile-leaderboard.expanded .lb-content {
+            display: block;
         }
 
         /* ===== Mobile Controls ===== */
@@ -577,7 +648,7 @@
         .mobile-row { display: flex; justify-content: center; gap: 6px; }
 
         .mobile-btn {
-            width: 68px; height: 60px;
+            width: 70px; height: 56px;
             background: rgba(0, 240, 255, 0.08);
             border: 1px solid rgba(0, 240, 255, 0.25);
             border-radius: 12px;
@@ -590,7 +661,7 @@
             transition: background 0.1s;
         }
         .mobile-btn:active, .mobile-btn.pressed { background: rgba(0, 240, 255, 0.25); border-color: var(--neon-cyan); }
-        .mobile-btn.wide { width: 140px; }
+        .mobile-btn.wide { width: 150px; }
         .mobile-btn.accent {
             border-color: rgba(255, 0, 170, 0.3);
             color: var(--neon-pink);
@@ -652,9 +723,48 @@
             .side-panel { display: none !important; }
             #mobile-controls { display: flex; flex-direction: column; }
             #mobile-hud { display: block; }
-            #game-wrapper { padding: 5px; padding-top: 55px; padding-bottom: 220px; box-sizing: border-box; }
+            #mobile-leaderboard { display: block; }
+            #game-wrapper {
+                padding: 5px;
+                padding-top: 60px;
+                padding-bottom: 200px;
+                box-sizing: border-box;
+                justify-content: center;
+                align-items: center;
+            }
             #stats-bar { display: none; }
-            #settings-btn { top: calc(4px + var(--safe-top)); right: 8px; width: 36px; height: 36px; font-size: 18px; }
+            #settings-btn {
+                position: static;
+                width: 32px; height: 32px;
+                font-size: 16px;
+                z-index: 51;
+                background: transparent;
+                border: none;
+            }
+            #hud-settings-slot {
+                display: flex !important;
+                align-items: center;
+                justify-content: center;
+            }
+            #settings-panel { width: min(300px, 85vw); }
+        }
+
+        /* Small phones (iPhone SE, 5s etc) */
+        @media (max-width: 375px) {
+            .mobile-btn { width: 62px; height: 50px; font-size: 20px; }
+            .mobile-btn.wide { width: 130px; }
+            .hud-value { font-size: 11px; }
+            .hud-label { font-size: 6px; }
+            .hud-item.hud-piece { width: 42px; }
+            #mobile-controls { padding: 6px 4px; gap: 4px; }
+            .mobile-row { gap: 4px; }
+        }
+
+        /* Large phones (iPhone Max, Pro Max) */
+        @media (min-width: 414px) and (max-width: 768px) {
+            .mobile-btn { width: 74px; height: 60px; }
+            .mobile-btn.wide { width: 160px; }
+            .hud-value { font-size: 15px; }
         }
 
         @media (max-width: 768px) and (orientation: landscape) {
@@ -666,7 +776,8 @@
             .mobile-row { flex-direction: row; }
             .mobile-btn { width: 56px; height: 48px; font-size: 18px; }
             .mobile-btn.wide { width: 100px; }
-            #game-wrapper { padding-top: 40px; }
+            #game-wrapper { padding-top: 40px; padding-bottom: 100px; }
+            #mobile-leaderboard { display: none; }
         }
 
         @media (max-height: 650px) {
@@ -734,25 +845,28 @@
     <!-- Mobile HUD -->
     <div id="mobile-hud">
         <div class="hud-row">
-            <div class="hud-item">
+            <div class="hud-item hud-piece">
                 <div class="hud-label">Hold</div>
-                <canvas class="hud-mini-canvas" id="hud-hold" width="48" height="36"></canvas>
+                <canvas class="hud-mini-canvas" id="hud-hold" width="44" height="32"></canvas>
             </div>
-            <div class="hud-item">
+            <div class="hud-item hud-stat">
                 <div class="hud-label">Score</div>
                 <div class="hud-value" id="hud-score">0</div>
             </div>
-            <div class="hud-item">
-                <div class="hud-label">Level</div>
+            <div class="hud-item hud-stat">
+                <div class="hud-label">Lvl</div>
                 <div class="hud-value" id="hud-level">1</div>
             </div>
-            <div class="hud-item">
+            <div class="hud-item hud-stat">
                 <div class="hud-label">Lines</div>
                 <div class="hud-value" id="hud-lines">0</div>
             </div>
-            <div class="hud-item">
+            <div class="hud-item hud-piece">
                 <div class="hud-label">Next</div>
-                <canvas class="hud-mini-canvas" id="hud-next" width="48" height="36"></canvas>
+                <canvas class="hud-mini-canvas" id="hud-next" width="44" height="32"></canvas>
+            </div>
+            <div class="hud-item" id="hud-settings-slot" style="flex:0 0 auto; width:36px;">
+                <!-- Placeholder: settings btn overlays here on mobile -->
             </div>
         </div>
     </div>
@@ -890,6 +1004,14 @@
         </div>
         <div class="mobile-row">
             <div class="mobile-btn wide" data-action="drop">DROP</div>
+        </div>
+    </div>
+
+    <!-- Mobile Leaderboard -->
+    <div id="mobile-leaderboard">
+        <div class="lb-toggle" id="lb-toggle">&#9733; LEADERBOARD &#9733;</div>
+        <div class="lb-content">
+            <ul class="high-score-list" id="mobile-highscore-list"></ul>
         </div>
     </div>
 
