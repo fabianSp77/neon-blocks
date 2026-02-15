@@ -75,8 +75,10 @@
             display: flex;
             gap: 16px;
             align-items: flex-start;
+            justify-content: center;
             max-height: 100dvh;
             padding: 10px;
+            box-sizing: border-box;
         }
 
         .side-panel {
@@ -650,7 +652,7 @@
             .side-panel { display: none !important; }
             #mobile-controls { display: flex; flex-direction: column; }
             #mobile-hud { display: block; }
-            #game-wrapper { padding: 5px; padding-top: 50px; }
+            #game-wrapper { padding: 5px; padding-top: 55px; padding-bottom: 220px; box-sizing: border-box; }
             #stats-bar { display: none; }
             #settings-btn { top: calc(4px + var(--safe-top)); right: 8px; width: 36px; height: 36px; font-size: 18px; }
         }
