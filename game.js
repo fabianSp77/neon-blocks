@@ -158,7 +158,11 @@ const MODE_DESCRIPTIONS = {
     classic: 'Endloser Modus - Spiele bis zum Ende!',
     sprint: 'Schaffe 40 Lines so schnell wie moeglich!',
     ultra: '2 Minuten - Maximaler Score!',
+    vs: 'Lokal 1v1 - Wer ueberlebt gewinnt!',
 };
+
+// VS mode board gap
+const VS_GAP = 3; // cells between boards
 
 const DROP_SPEEDS = [800,720,630,550,470,380,300,220,150,100,80,65,50,40,30,25,20,15,10,8,5];
 
@@ -543,6 +547,239 @@ class BagRandomizer {
     }
 }
 
+// --- VS Mode: Per-Player Game Board ---
+class GameBoard {
+    constructor(playerNum) {
+        this.playerNum = playerNum;
+        this.grid = []; this.currentPiece = null; this.holdPiece = null;
+        this.holdUsed = false; this.nextPieces = [];
+        this.score = 0; this.level = 1; this.lines = 0;
+        this.combo = -1; this.maxCombo = 0;
+        this.tspinCount = 0; this.tetrisCount = 0;
+        this.backToBack = false; this.backToBackCount = 0;
+        this.lastTspin = 'none'; this.lockDelay = 0; this.lockMoves = 0;
+        this.lineClearAnim = null;
+        this.screenShake = 0; this.screenShakeIntensity = 0;
+        this.levelUpFlash = 0; this.dangerPulse = 0; this.spawnAlpha = 1;
+        this.impactFlash = 0; this.impactFlashRows = [];
+        this.randomizer = new BagRandomizer();
+        this.alive = true; this.pendingGarbage = 0;
+        this.lastDrop = 0; this.keys = {}; this.dasTimer = {}; this.arrTimer = {};
+    }
+
+    init() {
+        this.grid = Array.from({ length: TOTAL_ROWS }, () => Array(COLS).fill(null));
+        this.currentPiece = null; this.holdPiece = null; this.holdUsed = false;
+        this.nextPieces = []; this.score = 0; this.level = 1; this.lines = 0;
+        this.combo = -1; this.maxCombo = 0;
+        this.tspinCount = 0; this.tetrisCount = 0;
+        this.backToBack = false; this.backToBackCount = 0; this.lastTspin = 'none';
+        this.lineClearAnim = null; this.screenShake = 0; this.levelUpFlash = 0;
+        this.impactFlash = 0; this.impactFlashRows = [];
+        this.randomizer = new BagRandomizer();
+        this.alive = true; this.pendingGarbage = 0; this.lockDelay = 0; this.lockMoves = 0;
+        this.lastDrop = 0;
+        for (let i = 0; i < 5; i++) this.nextPieces.push(this.randomizer.next());
+        this.spawnPiece();
+    }
+
+    spawnPiece(type) {
+        if (!type) type = this.nextPieces.shift();
+        while (this.nextPieces.length < 5) this.nextPieces.push(this.randomizer.next());
+        const shape = PIECES[type][0];
+        const piece = { type, rotation: 0, shape, x: Math.floor((COLS - shape[0].length) / 2), y: 0 };
+        let firstBlockRow = 0;
+        for (let r = 0; r < shape.length; r++) { if (shape[r].some(c => c)) { firstBlockRow = r; break; } }
+        piece.y = HIDDEN_ROWS - firstBlockRow;
+        if (!this.isValid(piece)) { piece.y--; if (!this.isValid(piece)) { this.alive = false; return null; } }
+        this.currentPiece = piece; this.lockDelay = 0; this.lockMoves = 0;
+        this.lastTspin = 'none'; this.holdUsed = false; this.spawnAlpha = 0;
+        return piece;
+    }
+
+    isValid(piece, shape, x, y) {
+        shape = shape || piece.shape; x = x !== undefined ? x : piece.x; y = y !== undefined ? y : piece.y;
+        for (let row = 0; row < shape.length; row++) {
+            for (let col = 0; col < shape[row].length; col++) {
+                if (shape[row][col]) {
+                    const newX = x + col, newY = y + row;
+                    if (newX < 0 || newX >= COLS || newY >= TOTAL_ROWS) return false;
+                    if (newY >= 0 && this.grid[newY] && this.grid[newY][newX]) return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    movePiece(dx, dy) {
+        const p = this.currentPiece; if (!p) return false;
+        if (this.isValid(p, p.shape, p.x + dx, p.y + dy)) {
+            p.x += dx; p.y += dy;
+            if (dx !== 0) { this.lastTspin = 'none'; this.resetLockDelay(); }
+            return true;
+        }
+        return false;
+    }
+
+    rotatePiece(dir = 1) {
+        const p = this.currentPiece; if (!p || p.type === 'O') return false;
+        if (dir === 2) {
+            const newRot = (p.rotation + 2) % 4, newShape = PIECES[p.type][newRot];
+            for (const [kx, ky] of [[0,0],[0,1],[0,-1],[1,0],[-1,0]]) {
+                if (this.isValid(p, newShape, p.x + kx, p.y + ky)) {
+                    p.x += kx; p.y += ky; p.rotation = newRot; p.shape = newShape;
+                    this.resetLockDelay(); return true;
+                }
+            }
+            return false;
+        }
+        const oldRot = p.rotation, newRot = (oldRot + dir + 4) % 4;
+        const newShape = PIECES[p.type][newRot];
+        const kicks = p.type === 'I' ? WALL_KICKS.I : WALL_KICKS.normal;
+        const sign = dir === 1 ? 1 : -1;
+        for (const [kx, ky] of kicks[dir === 1 ? oldRot : newRot]) {
+            const testX = p.x + kx * sign, testY = p.y - ky * sign;
+            if (this.isValid(p, newShape, testX, testY)) {
+                p.x = testX; p.y = testY; p.rotation = newRot; p.shape = newShape;
+                this.checkTspin(p); this.resetLockDelay(); return true;
+            }
+        }
+        return false;
+    }
+
+    checkTspin(piece) {
+        if (piece.type !== 'T') { this.lastTspin = 'none'; return; }
+        const cx = piece.x + 1, cy = piece.y + 1;
+        let filled = 0;
+        [[cx-1,cy-1],[cx+1,cy-1],[cx-1,cy+1],[cx+1,cy+1]].forEach(([x, y]) => {
+            if (x < 0 || x >= COLS || y >= TOTAL_ROWS || (y >= 0 && this.grid[y] && this.grid[y][x])) filled++;
+        });
+        if (filled >= 3) {
+            const fc = this.getTFrontCorners(piece);
+            const ff = fc.filter(([x, y]) => x < 0 || x >= COLS || y >= TOTAL_ROWS || (y >= 0 && this.grid[y] && this.grid[y][x])).length;
+            this.lastTspin = ff === 2 ? 'full' : 'mini';
+        } else { this.lastTspin = 'none'; }
+    }
+
+    getTFrontCorners(piece) {
+        const cx = piece.x + 1, cy = piece.y + 1;
+        switch (piece.rotation) {
+            case 0: return [[cx-1,cy-1],[cx+1,cy-1]];
+            case 1: return [[cx+1,cy-1],[cx+1,cy+1]];
+            case 2: return [[cx-1,cy+1],[cx+1,cy+1]];
+            case 3: return [[cx-1,cy-1],[cx-1,cy+1]];
+        }
+    }
+
+    resetLockDelay() { if (this.lockMoves < MAX_LOCK_MOVES) { this.lockDelay = 0; this.lockMoves++; } }
+    getGhostY() { const p = this.currentPiece; if (!p) return 0; let gy = p.y; while (this.isValid(p, p.shape, p.x, gy + 1)) gy++; return gy; }
+
+    hardDrop() {
+        const p = this.currentPiece; if (!p) return 0;
+        let cells = 0;
+        while (this.isValid(p, p.shape, p.x, p.y + 1)) { p.y++; cells++; }
+        this.score += cells * HARD_DROP_SCORE;
+        this.impactFlash = 8; this.impactFlashRows = [];
+        for (let row = 0; row < p.shape.length; row++) { if (p.shape[row].some(c => c)) this.impactFlashRows.push(p.y + row - HIDDEN_ROWS); }
+        if (cells > 3) { this.screenShake = Math.min(8, cells); this.screenShakeIntensity = Math.min(5, cells * 0.6); }
+        return cells;
+    }
+
+    softDrop() { if (this.movePiece(0, 1)) { this.score += SOFT_DROP_SCORE; this.lastDrop = performance.now(); return true; } return false; }
+
+    holdCurrentPiece() {
+        if (this.holdUsed || !this.currentPiece) return false;
+        const type = this.currentPiece.type;
+        if (this.holdPiece) { const held = this.holdPiece; this.holdPiece = type; this.spawnPiece(held); }
+        else { this.holdPiece = type; this.spawnPiece(); }
+        this.holdUsed = true; return true;
+    }
+
+    lockPiece() {
+        const p = this.currentPiece; if (!p) return { cleared: 0, attack: 0, rows: [] };
+        for (let row = 0; row < p.shape.length; row++) {
+            for (let col = 0; col < p.shape[row].length; col++) {
+                if (p.shape[row][col]) {
+                    const gy = p.y + row, gx = p.x + col;
+                    if (gy >= 0 && gy < TOTAL_ROWS && gx >= 0 && gx < COLS) this.grid[gy][gx] = p.type;
+                }
+            }
+        }
+        this.currentPiece = null;
+        return this.processScoring(this.checkLines());
+    }
+
+    checkLines() {
+        const full = [];
+        for (let row = 0; row < TOTAL_ROWS; row++) { if (this.grid[row] && this.grid[row].every(cell => cell !== null)) full.push(row); }
+        return full;
+    }
+
+    clearLines(rows) {
+        rows.sort((a, b) => a - b);
+        for (const row of rows.reverse()) this.grid.splice(row, 1);
+        while (this.grid.length < TOTAL_ROWS) this.grid.unshift(Array(COLS).fill(null));
+    }
+
+    processScoring(clearedRows) {
+        const numLines = clearedRows.length;
+        if (numLines === 0) { this.combo = -1; return { cleared: 0, attack: 0, rows: clearedRows }; }
+        this.combo++; if (this.combo > this.maxCombo) this.maxCombo = this.combo;
+        let points = 0;
+        const isTetris = numLines === 4, isTspin = this.lastTspin !== 'none';
+        if (isTspin) {
+            this.tspinCount++;
+            if (this.lastTspin === 'mini') points = numLines === 0 ? TSPIN_SCORES.mini : TSPIN_SCORES.miniSingle;
+            else points = [0, TSPIN_SCORES.single, TSPIN_SCORES.double, TSPIN_SCORES.triple][numLines] || 0;
+        } else { points = LINE_SCORES[numLines] || 0; }
+        if (isTetris) this.tetrisCount++;
+        if ((isTetris || isTspin) && this.backToBack) { this.backToBackCount++; points = Math.floor(points * 1.5); }
+        else if (!(isTetris || isTspin)) { this.backToBackCount = 0; }
+        this.backToBack = isTetris || isTspin;
+        if (this.combo > 0) points += COMBO_BONUS * this.combo * this.level;
+        points *= this.level; this.score += points; this.lines += numLines;
+        const newLevel = Math.floor(this.lines / LINES_PER_LEVEL) + 1;
+        if (newLevel > this.level) { this.level = newLevel; this.levelUpFlash = 20; }
+        // Attack calculation
+        const ATTACK_TABLE = [0, 0, 1, 2, 4];
+        let attack = ATTACK_TABLE[numLines] || 0;
+        if (isTspin) attack = Math.max(attack, numLines * 2);
+        if (this.backToBack && this.backToBackCount > 0) attack += 1;
+        if (this.combo > 1) attack += Math.floor(this.combo / 2);
+        const isEmpty = this.grid.every(row => row.every(c => c === null));
+        if (isEmpty) { this.score += PERFECT_CLEAR_BONUS * this.level; attack += 6; }
+        if (numLines >= 2) { this.screenShake = Math.max(this.screenShake, 3 + numLines * 2); this.screenShakeIntensity = Math.max(this.screenShakeIntensity, 2 + numLines); }
+        return { cleared: numLines, attack, rows: clearedRows, isTetris, isTspin, isEmpty };
+    }
+
+    addGarbage(count) {
+        const gapCol = Math.floor(Math.random() * COLS);
+        for (let i = 0; i < count; i++) {
+            this.grid.shift();
+            const row = Array(COLS).fill('G'); row[gapCol] = null;
+            this.grid.push(row);
+        }
+        if (this.currentPiece && !this.isValid(this.currentPiece)) {
+            this.currentPiece.y -= count;
+            if (!this.isValid(this.currentPiece)) this.alive = false;
+        }
+    }
+
+    getDangerLevel() {
+        for (let row = HIDDEN_ROWS; row < TOTAL_ROWS; row++) {
+            if (this.grid[row].some(c => c !== null)) {
+                const h = row - HIDDEN_ROWS;
+                if (h <= 4) return 2; if (h <= 8) return 1; return 0;
+            }
+        }
+        return 0;
+    }
+}
+
+// Garbage piece color
+COLORS_NORMAL['G'] = { fill: '#555', glow: 'rgba(100,100,100,0.4)', dark: '#333', pattern: 'grid' };
+COLORS_COLORBLIND['G'] = { fill: '#555', glow: 'rgba(100,100,100,0.4)', dark: '#333', pattern: 'grid' };
+
 // --- Main Game ---
 class NeonBlocks {
     constructor() {
@@ -613,6 +850,10 @@ class NeonBlocks {
 
         // Level theme tracking
         this._currentThemeIndex = -1;
+
+        // VS mode
+        this.vsBoards = null; // [GameBoard, GameBoard] when in VS mode
+        this.p2Name = '';
 
         // Player
         this.playerName = '';
@@ -734,8 +975,29 @@ class NeonBlocks {
             mobileHud: document.getElementById('mobile-hud'),
             mobileLeaderboard: document.getElementById('mobile-leaderboard'),
             lbToggle: document.getElementById('lb-toggle'),
-            // Mode
+            // Mode & stats
             modeDesc: document.getElementById('mode-desc'),
+            statsBar: document.getElementById('stats-bar'),
+            // VS mode
+            p2NameGroup: document.getElementById('p2-name-group'),
+            p2NameInput: document.getElementById('p2-name-input'),
+            p1NameLabel: document.getElementById('p1-name-label'),
+            vsControlsHint: document.getElementById('vs-controls-hint'),
+            vsHud: document.getElementById('vs-hud'),
+            vsP1Name: document.getElementById('vs-p1-name'),
+            vsP2Name: document.getElementById('vs-p2-name'),
+            vsP1Score: document.getElementById('vs-p1-score'),
+            vsP2Score: document.getElementById('vs-p2-score'),
+            vsP1Lines: document.getElementById('vs-p1-lines'),
+            vsP2Lines: document.getElementById('vs-p2-lines'),
+            vsP1Attack: document.getElementById('vs-p1-attack'),
+            vsP2Attack: document.getElementById('vs-p2-attack'),
+            vsResultOverlay: document.getElementById('vs-result-overlay'),
+            vsWinnerText: document.getElementById('vs-winner-text'),
+            vsResultDetail: document.getElementById('vs-result-detail'),
+            vsStats: document.getElementById('vs-stats'),
+            vsRestartBtn: document.getElementById('vs-restart-btn'),
+            vsMenuBtn: document.getElementById('vs-menu-btn'),
         };
     }
 
@@ -890,6 +1152,11 @@ class NeonBlocks {
                 btn.classList.add('active');
                 this.gameMode = btn.dataset.mode;
                 this.dom.modeDesc.textContent = MODE_DESCRIPTIONS[this.gameMode];
+                // Show/hide VS-specific UI
+                const isVs = this.gameMode === 'vs';
+                this.dom.p2NameGroup.style.display = isVs ? '' : 'none';
+                this.dom.vsControlsHint.style.display = isVs ? '' : 'none';
+                this.dom.p1NameLabel.textContent = isVs ? 'Spieler 1' : 'Dein Name';
             });
         });
     }
@@ -1533,16 +1800,27 @@ class NeonBlocks {
         localStorage.setItem('neonblocks_player', this.playerName);
         this.dom.playerNameDisplay.textContent = this.playerName;
 
+        if (this.gameMode === 'vs') {
+            this.p2Name = this._sanitizePlayerName(this.dom.p2NameInput.value);
+        }
+
         this.audio.init();
 
         this.dom.startOverlay.classList.add('hidden');
         this.dom.gameoverOverlay.classList.add('hidden');
         this.dom.pauseOverlay.classList.add('hidden');
+        if (this.dom.vsResultOverlay) this.dom.vsResultOverlay.classList.add('hidden');
 
         // Countdown then start
         this.gameState = 'countdown';
         this.startCountdown(() => {
-            this._initGameState();
+            if (this.gameMode === 'vs') {
+                this._initVsMode();
+            } else {
+                this.vsBoards = null;
+                this.dom.vsHud.style.display = 'none';
+                this._initGameState();
+            }
             this.gameState = 'playing';
             this.lastDrop = performance.now();
             this.modeStartTime = Date.now();
@@ -1586,6 +1864,312 @@ class NeonBlocks {
         this.dom.tetrisCount.textContent = '0';
         this.dom.maxCombo.textContent = '0';
         this.dom.modeTimer.textContent = '';
+    }
+
+    /** Initialize VS (1v1) mode with two game boards. */
+    _initVsMode() {
+        const b1 = new GameBoard(1);
+        const b2 = new GameBoard(2);
+        b1.init();
+        b2.init();
+        this.vsBoards = [b1, b2];
+
+        // Resize canvas for two boards
+        this.canvas.width = (COLS * 2 + VS_GAP) * CELL;
+        this.canvas.height = ROWS * CELL;
+        this.confettiCanvas.width = this.canvas.width;
+        this.confettiCanvas.height = this.canvas.height;
+
+        // Show VS HUD
+        this.dom.vsHud.style.display = '';
+        this.dom.vsP1Name.textContent = this.playerName;
+        this.dom.vsP2Name.textContent = this.p2Name;
+        this.dom.vsP1Score.textContent = '0';
+        this.dom.vsP2Score.textContent = '0';
+        this.dom.vsP1Lines.textContent = '0 Lines';
+        this.dom.vsP2Lines.textContent = '0 Lines';
+        this.dom.vsP1Attack.textContent = '';
+        this.dom.vsP2Attack.textContent = '';
+
+        // Hide single-player stats bar
+        if (this.dom.statsBar) this.dom.statsBar.style.display = 'none';
+    }
+
+    /** Update VS mode game state for one tick. */
+    _updateVsBoard(board, time, dt) {
+        if (!board.alive) return;
+        const interval = getDropInterval(board.level);
+        if (time - board.lastDrop >= interval) {
+            if (!board.movePiece(0, 1)) {
+                board.lockDelay += interval;
+                if (board.lockDelay >= LOCK_DELAY_MS) this._vsLockPiece(board);
+            } else { board.lockDelay = 0; }
+            board.lastDrop = time;
+        }
+        if (board.currentPiece && !board.isValid(board.currentPiece, board.currentPiece.shape, board.currentPiece.x, board.currentPiece.y + 1)) {
+            board.lockDelay += dt;
+            if (board.lockDelay >= LOCK_DELAY_MS) this._vsLockPiece(board);
+        }
+        if (board.lineClearAnim) {
+            board.lineClearAnim.update();
+            if (board.lineClearAnim.done) {
+                board.clearLines(board.lineClearAnim.rows);
+                board.lineClearAnim = null;
+                // Apply pending garbage after own lines are cleared
+                if (board.pendingGarbage > 0) {
+                    board.addGarbage(board.pendingGarbage);
+                    board.pendingGarbage = 0;
+                }
+                board.spawnPiece();
+                if (!board.alive) this._vsGameOver(board);
+            }
+        }
+        if (board.screenShake > 0) board.screenShake--;
+        if (board.levelUpFlash > 0) board.levelUpFlash--;
+        if (board.impactFlash > 0) board.impactFlash--;
+    }
+
+    /** Lock a piece on a VS board and handle attacks. */
+    _vsLockPiece(board) {
+        const result = board.lockPiece();
+        if (result.cleared > 0) {
+            this.audio.play(result.isTetris ? 'tetris' : result.isTspin ? 'tspin' : 'clear');
+            board.lineClearAnim = new LineClearAnimation(result.rows);
+
+            // Send attack to opponent
+            if (result.attack > 0) {
+                const opponent = this.vsBoards[board.playerNum === 1 ? 1 : 0];
+                opponent.pendingGarbage += result.attack;
+                // Show attack indicator
+                const attackEl = board.playerNum === 1 ? this.dom.vsP1Attack : this.dom.vsP2Attack;
+                attackEl.textContent = `+${result.attack}`;
+                setTimeout(() => { attackEl.textContent = ''; }, 800);
+            }
+
+            if (result.isEmpty) {
+                this.audio.play('perfectClear');
+                this.confetti.burst(60);
+            }
+        } else {
+            this.audio.play('lock');
+            // Apply pending garbage when player doesn't clear lines
+            if (board.pendingGarbage > 0) {
+                board.addGarbage(board.pendingGarbage);
+                board.pendingGarbage = 0;
+            }
+            board.spawnPiece();
+            if (!board.alive) this._vsGameOver(board);
+        }
+    }
+
+    /** Handle VS DAS for a specific board. */
+    _vsHandleDAS(board, now, leftKey, rightKey, downAction) {
+        [leftKey, rightKey].forEach(key => {
+            if (board.keys[key] && board.dasTimer[key]) {
+                const elapsed = now - board.dasTimer[key];
+                if (elapsed >= DEFAULT_DAS) {
+                    if (!board.arrTimer[key] || now - board.arrTimer[key] >= DEFAULT_ARR) {
+                        board.movePiece(key === leftKey ? -1 : 1, 0);
+                        board.arrTimer[key] = now;
+                    }
+                }
+            }
+        });
+        if (downAction && board.keys[downAction]) board.softDrop();
+    }
+
+    /** Handle game over for a VS board. */
+    _vsGameOver(losingBoard) {
+        this.gameState = 'gameover';
+        this.audio.stopMusic();
+        const winner = this.vsBoards[losingBoard.playerNum === 1 ? 1 : 0];
+        const winnerName = losingBoard.playerNum === 1 ? this.p2Name : this.playerName;
+        const loserName = losingBoard.playerNum === 1 ? this.playerName : this.p2Name;
+
+        this.dom.vsWinnerText.textContent = `${winnerName} GEWINNT!`;
+        this.dom.vsWinnerText.style.color = losingBoard.playerNum === 1 ? '#ff00aa' : '#00f0ff';
+        this.dom.vsResultDetail.textContent = `${loserName} hat verloren`;
+
+        // Build stats
+        const statsEl = this.dom.vsStats;
+        while (statsEl.firstChild) statsEl.removeChild(statsEl.firstChild);
+        const b1 = this.vsBoards[0], b2 = this.vsBoards[1];
+        const rows = [
+            ['', this.playerName, this.p2Name],
+            ['Score', b1.score.toLocaleString(), b2.score.toLocaleString()],
+            ['Lines', b1.lines, b2.lines],
+            ['Level', b1.level, b2.level],
+            ['Tetrisse', b1.tetrisCount, b2.tetrisCount],
+            ['T-Spins', b1.tspinCount, b2.tspinCount],
+            ['Max Combo', b1.maxCombo, b2.maxCombo],
+        ];
+        rows.forEach(([label, v1, v2], i) => {
+            const lbl = document.createElement('span');
+            lbl.className = 'stat-label';
+            lbl.textContent = label;
+            lbl.style.gridColumn = '1';
+            const val1 = document.createElement('span');
+            val1.className = 'stat-value';
+            val1.textContent = v1;
+            val1.style.color = i === 0 ? '#00f0ff' : '#fff';
+            val1.style.gridColumn = '2';
+            const val2 = document.createElement('span');
+            val2.className = 'stat-value';
+            val2.textContent = v2;
+            val2.style.color = i === 0 ? '#ff00aa' : '#fff';
+            val2.style.gridColumn = '3';
+            statsEl.appendChild(lbl);
+            statsEl.appendChild(val1);
+            statsEl.appendChild(val2);
+        });
+        statsEl.style.gridTemplateColumns = '1fr 1fr 1fr';
+        statsEl.style.display = 'grid';
+        statsEl.style.gap = '4px 10px';
+
+        this.confetti.burst(80);
+        this.audio.play('gameover');
+        this.dom.vsResultOverlay.classList.remove('hidden');
+    }
+
+    /** Update VS HUD display. */
+    _updateVsHud() {
+        if (!this.vsBoards) return;
+        const [b1, b2] = this.vsBoards;
+        this.dom.vsP1Score.textContent = b1.score.toLocaleString();
+        this.dom.vsP2Score.textContent = b2.score.toLocaleString();
+        this.dom.vsP1Lines.textContent = b1.lines + ' Lines';
+        this.dom.vsP2Lines.textContent = b2.lines + ' Lines';
+    }
+
+    /** Render a single game board at a given x-offset on the canvas. */
+    _renderVsBoard(board, xOffset, playerColor) {
+        const ctx = this.ctx;
+        ctx.save();
+        ctx.translate(xOffset, 0);
+
+        // Screen shake
+        if (board.screenShake > 0) {
+            ctx.translate((Math.random()-0.5)*board.screenShakeIntensity, (Math.random()-0.5)*board.screenShakeIntensity);
+        }
+
+        // Board background
+        ctx.fillStyle = 'rgba(5, 5, 15, 0.95)';
+        ctx.fillRect(0, 0, COLS * CELL, ROWS * CELL);
+
+        // Level-up flash
+        if (board.levelUpFlash > 0) {
+            ctx.fillStyle = `rgba(0, 255, 106, ${(board.levelUpFlash / 20) * 0.2})`;
+            ctx.fillRect(0, 0, COLS * CELL, ROWS * CELL);
+        }
+
+        // Impact flash
+        if (board.impactFlash > 0) {
+            const flashAlpha = (board.impactFlash / 8) * 0.6;
+            board.impactFlashRows.forEach(row => {
+                if (row >= 0 && row < ROWS) {
+                    ctx.fillStyle = `rgba(255,255,255,${flashAlpha})`;
+                    ctx.fillRect(0, row * CELL, COLS * CELL, CELL);
+                }
+            });
+        }
+
+        // Grid lines
+        ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+        ctx.lineWidth = 0.5;
+        for (let x = 0; x <= COLS; x++) { ctx.beginPath(); ctx.moveTo(x*CELL, 0); ctx.lineTo(x*CELL, ROWS*CELL); ctx.stroke(); }
+        for (let y = 0; y <= ROWS; y++) { ctx.beginPath(); ctx.moveTo(0, y*CELL); ctx.lineTo(COLS*CELL, y*CELL); ctx.stroke(); }
+
+        // Danger zone
+        const danger = board.getDangerLevel();
+        if (danger > 0) {
+            board.dangerPulse += 0.05;
+            const pulseAlpha = (Math.sin(board.dangerPulse * 3) + 1) * 0.5;
+            const dColor = danger === 2 ? `rgba(255,0,68,${pulseAlpha * 0.15})` : `rgba(255,106,0,${pulseAlpha * 0.08})`;
+            const dHeight = danger === 2 ? ROWS * CELL * 0.3 : ROWS * CELL * 0.15;
+            const dGrad = ctx.createLinearGradient(0, 0, 0, dHeight);
+            dGrad.addColorStop(0, dColor); dGrad.addColorStop(1, 'transparent');
+            ctx.fillStyle = dGrad; ctx.fillRect(0, 0, COLS * CELL, dHeight);
+        }
+
+        // Line clear flash
+        if (board.lineClearAnim) {
+            const flash = board.lineClearAnim.getFlash();
+            if (flash > 0) {
+                board.lineClearAnim.rows.forEach(row => {
+                    ctx.fillStyle = `rgba(255,255,255,${flash})`;
+                    ctx.fillRect(0, (row - HIDDEN_ROWS) * CELL, COLS * CELL, CELL);
+                });
+            }
+        }
+
+        // Placed blocks
+        for (let row = HIDDEN_ROWS; row < TOTAL_ROWS; row++) {
+            if (!board.grid[row]) continue;
+            for (let col = 0; col < COLS; col++) {
+                const cell = board.grid[row][col];
+                if (cell) {
+                    let alpha = 1;
+                    if (board.lineClearAnim && board.lineClearAnim.rows.includes(row)) alpha = board.lineClearAnim.getAlpha();
+                    this.drawCell(ctx, col * CELL, (row - HIDDEN_ROWS) * CELL, CELL, COLORS[cell], alpha);
+                }
+            }
+        }
+
+        // Ghost + current piece
+        const p = board.currentPiece;
+        if (p) {
+            if (board.spawnAlpha < 1) board.spawnAlpha = Math.min(1, board.spawnAlpha + SPAWN_FADE_SPEED);
+            const color = COLORS[p.type];
+
+            // Ghost
+            if (this.settingsManager.get('ghost')) {
+                const ghostY = board.getGhostY();
+                if (ghostY !== p.y) {
+                    for (let row = 0; row < p.shape.length; row++) {
+                        for (let col = 0; col < p.shape[row].length; col++) {
+                            if (p.shape[row][col]) {
+                                const drawY = (ghostY + row - HIDDEN_ROWS) * CELL;
+                                const drawX = (p.x + col) * CELL;
+                                if (drawY >= 0) {
+                                    ctx.save(); ctx.globalAlpha = 0.18;
+                                    ctx.fillStyle = color.fill;
+                                    ctx.fillRect(drawX + 2, drawY + 2, CELL - 4, CELL - 4);
+                                    ctx.globalAlpha = 0.35; ctx.strokeStyle = color.fill;
+                                    ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
+                                    ctx.strokeRect(drawX + 2, drawY + 2, CELL - 4, CELL - 4);
+                                    ctx.setLineDash([]); ctx.restore();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Active piece
+            for (let row = 0; row < p.shape.length; row++) {
+                for (let col = 0; col < p.shape[row].length; col++) {
+                    if (p.shape[row][col]) {
+                        const drawY = (p.y + row - HIDDEN_ROWS) * CELL;
+                        const drawX = (p.x + col) * CELL;
+                        if (drawY >= -CELL) this.drawCell(ctx, drawX, drawY, CELL, color, board.spawnAlpha);
+                    }
+                }
+            }
+        }
+
+        // Pending garbage indicator (red bar on left side)
+        if (board.pendingGarbage > 0) {
+            const garbageHeight = Math.min(board.pendingGarbage, ROWS) * CELL;
+            ctx.fillStyle = 'rgba(255,0,68,0.6)';
+            ctx.fillRect(0, ROWS * CELL - garbageHeight, 3, garbageHeight);
+        }
+
+        // Border
+        ctx.strokeStyle = playerColor;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(0, 0, COLS * CELL, ROWS * CELL);
+
+        ctx.restore();
     }
 
     togglePause() {
@@ -1634,6 +2218,38 @@ class NeonBlocks {
 
             if (this.gameState !== 'playing') return;
 
+            // VS mode controls
+            if (this.gameMode === 'vs' && this.vsBoards) {
+                e.preventDefault();
+                const [b1, b2] = this.vsBoards;
+                const key = e.key.toLowerCase();
+                const now = performance.now();
+
+                // Player 1: WASD + Q/E/Space
+                if (b1.alive) {
+                    if (key === 'a') { if (!b1.keys['a']) { b1.movePiece(-1, 0); b1.dasTimer['a'] = now; } b1.keys['a'] = true; }
+                    else if (key === 'd') { if (!b1.keys['d']) { b1.movePiece(1, 0); b1.dasTimer['d'] = now; } b1.keys['d'] = true; }
+                    else if (key === 's') { b1.keys['s'] = true; b1.softDrop(); }
+                    else if (key === 'w') { b1.rotatePiece(1); this.audio.play('rotate'); }
+                    else if (key === 'e') { b1.rotatePiece(2); this.audio.play('rotate'); }
+                    else if (key === 'q') { if (b1.holdCurrentPiece()) this.audio.play('hold'); }
+                    else if (e.key === ' ') { b1.hardDrop(); this._vsLockPiece(b1); this.audio.play('drop'); this.audio.play('impact'); }
+                }
+
+                // Player 2: Arrows + Shift/Enter/Slash
+                if (b2.alive) {
+                    if (e.key === 'ArrowLeft') { if (!b2.keys['left']) { b2.movePiece(-1, 0); b2.dasTimer['left'] = now; } b2.keys['left'] = true; }
+                    else if (e.key === 'ArrowRight') { if (!b2.keys['right']) { b2.movePiece(1, 0); b2.dasTimer['right'] = now; } b2.keys['right'] = true; }
+                    else if (e.key === 'ArrowDown') { b2.keys['down'] = true; b2.softDrop(); }
+                    else if (e.key === 'ArrowUp') { b2.rotatePiece(1); this.audio.play('rotate'); }
+                    else if (key === '/') { b2.rotatePiece(2); this.audio.play('rotate'); }
+                    else if (e.key === 'Shift') { if (b2.holdCurrentPiece()) this.audio.play('hold'); }
+                    else if (e.key === 'Enter') { b2.hardDrop(); this._vsLockPiece(b2); this.audio.play('drop'); this.audio.play('impact'); }
+                }
+                return;
+            }
+
+            // Single-player controls
             switch(e.key) {
                 case 'ArrowLeft':
                     e.preventDefault();
@@ -1659,6 +2275,18 @@ class NeonBlocks {
         });
 
         document.addEventListener('keyup', e => {
+            // VS mode key up
+            if (this.gameMode === 'vs' && this.vsBoards) {
+                const [b1, b2] = this.vsBoards;
+                const key = e.key.toLowerCase();
+                if (key === 'a' || key === 'd' || key === 's') b1.keys[key] = false;
+                if (key === 'a' || key === 'd') delete b1.dasTimer[key];
+                if (e.key === 'ArrowLeft') { b2.keys['left'] = false; delete b2.dasTimer['left']; }
+                if (e.key === 'ArrowRight') { b2.keys['right'] = false; delete b2.dasTimer['right']; }
+                if (e.key === 'ArrowDown') b2.keys['down'] = false;
+                return;
+            }
+
             this.keys[e.key] = false;
             if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
                 delete this.dasTimer[e.key];
@@ -1671,6 +2299,23 @@ class NeonBlocks {
         this.dom.restartBtn.addEventListener('click', () => this.startGame());
         this.dom.resumeBtn.addEventListener('click', () => this.togglePause());
         this.dom.shareBtn.addEventListener('click', () => this.shareScore());
+
+        // VS mode buttons
+        if (this.dom.vsRestartBtn) {
+            this.dom.vsRestartBtn.addEventListener('click', () => this.startGame());
+        }
+        if (this.dom.vsMenuBtn) {
+            this.dom.vsMenuBtn.addEventListener('click', () => {
+                this.dom.vsResultOverlay.classList.add('hidden');
+                this.dom.vsHud.style.display = 'none';
+                this.dom.startOverlay.classList.remove('hidden');
+                this.gameState = 'start';
+                this.vsBoards = null;
+                // Restore canvas size
+                this.calculateCellSize();
+                if (this.dom.statsBar) this.dom.statsBar.style.display = '';
+            });
+        }
     }
 
     setupMobileControls() {
@@ -2110,36 +2755,43 @@ class NeonBlocks {
         this.drawBackground();
 
         if (this.gameState === 'playing') {
-            this.handleDAS(time);
-
-            const interval = getDropInterval(this.level);
-            if (time - this.lastDrop >= interval) {
-                if (!this.movePiece(0, 1)) {
-                    this.lockDelay += interval;
-                    if (this.lockDelay >= LOCK_DELAY_MS) this.lockPiece();
-                } else { this.lockDelay = 0; }
-                this.lastDrop = time;
-            }
-
-            if (this.currentPiece && !this.isValid(this.currentPiece, this.currentPiece.shape, this.currentPiece.x, this.currentPiece.y + 1)) {
-                this.lockDelay += dt;
-                if (this.lockDelay >= LOCK_DELAY_MS) this.lockPiece();
-            }
-
-            if (this.lineClearAnim) {
-                this.lineClearAnim.update();
-                if (this.lineClearAnim.done) {
-                    this.clearLines(this.lineClearAnim.rows);
-                    this.lineClearAnim = null;
-                    this.spawnPiece();
+            if (this.gameMode === 'vs' && this.vsBoards) {
+                // VS mode update
+                const [b1, b2] = this.vsBoards;
+                this._vsHandleDAS(b1, time, 'a', 'd', 's');
+                this._vsHandleDAS(b2, time, 'left', 'right', 'down');
+                this._updateVsBoard(b1, time, dt);
+                this._updateVsBoard(b2, time, dt);
+                this._updateVsHud();
+                // Danger-based music: use highest danger level
+                this.audio.setDangerLevel(Math.max(b1.getDangerLevel(), b2.getDangerLevel()));
+            } else {
+                // Single-player update
+                this.handleDAS(time);
+                const interval = getDropInterval(this.level);
+                if (time - this.lastDrop >= interval) {
+                    if (!this.movePiece(0, 1)) {
+                        this.lockDelay += interval;
+                        if (this.lockDelay >= LOCK_DELAY_MS) this.lockPiece();
+                    } else { this.lockDelay = 0; }
+                    this.lastDrop = time;
                 }
+                if (this.currentPiece && !this.isValid(this.currentPiece, this.currentPiece.shape, this.currentPiece.x, this.currentPiece.y + 1)) {
+                    this.lockDelay += dt;
+                    if (this.lockDelay >= LOCK_DELAY_MS) this.lockPiece();
+                }
+                if (this.lineClearAnim) {
+                    this.lineClearAnim.update();
+                    if (this.lineClearAnim.done) {
+                        this.clearLines(this.lineClearAnim.rows);
+                        this.lineClearAnim = null;
+                        this.spawnPiece();
+                    }
+                }
+                this.updateModeTimer();
+                this.audio.setDangerLevel(this.getDangerLevel());
+                this.updateUI();
             }
-
-            this.updateModeTimer();
-            // Danger-mode audio: adjust music speed based on stack height
-            this.audio.setDangerLevel(this.getDangerLevel());
-            // LIVE UI update every frame
-            this.updateUI();
         }
 
         if (this.screenShake > 0) this.screenShake--;
@@ -2154,6 +2806,31 @@ class NeonBlocks {
     render() {
         const ctx = this.ctx;
         ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+
+        // VS mode rendering
+        if (this.gameMode === 'vs' && this.vsBoards) {
+            const p2Offset = (COLS + VS_GAP) * CELL;
+
+            // Draw gap between boards
+            ctx.fillStyle = 'rgba(5, 5, 15, 0.95)';
+            ctx.fillRect(COLS * CELL, 0, VS_GAP * CELL, ROWS * CELL);
+
+            // Draw "VS" in the gap
+            ctx.save();
+            ctx.fillStyle = 'rgba(255,0,68,0.3)';
+            ctx.font = `bold ${Math.max(10, CELL)}px Orbitron, monospace`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('VS', COLS * CELL + (VS_GAP * CELL) / 2, ROWS * CELL / 2);
+            ctx.restore();
+
+            this._renderVsBoard(this.vsBoards[0], 0, 'rgba(0,240,255,0.3)');
+            this._renderVsBoard(this.vsBoards[1], p2Offset, 'rgba(255,0,170,0.3)');
+            this.confetti.update();
+            return;
+        }
+
+        // Single-player rendering
         ctx.save();
 
         if (this.screenShake > 0) {
