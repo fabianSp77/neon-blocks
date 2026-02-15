@@ -219,8 +219,49 @@
             margin-bottom: 6px;
         }
 
+        .settings-slider-group {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .settings-slider-value {
+            font-family: 'Orbitron', monospace;
+            font-size: 11px;
+            color: var(--neon-cyan);
+            min-width: 40px;
+            text-align: right;
+        }
+        .settings-divider {
+            height: 1px;
+            background: rgba(255,255,255,0.08);
+            margin: 14px 0;
+        }
+        .settings-section-label {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 9px;
+            color: rgba(255,255,255,0.3);
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            margin-bottom: 10px;
+        }
+        .settings-stats {
+            display: grid;
+            grid-template-columns: 1fr auto;
+            gap: 4px 8px;
+            font-size: 11px;
+        }
+        .settings-stats .stat-key {
+            color: rgba(255,255,255,0.5);
+        }
+        .settings-stats .stat-val {
+            color: var(--neon-cyan);
+            font-family: 'Orbitron', monospace;
+            font-size: 10px;
+            text-align: right;
+        }
         .settings-slider {
             width: 100%;
+            flex: 1;
             -webkit-appearance: none;
             height: 6px;
             background: rgba(0, 240, 255, 0.2);
@@ -966,7 +1007,10 @@
 
         <div class="settings-group">
             <label>Volume</label>
-            <input type="range" class="settings-slider" id="volume-slider" min="0" max="100" value="30">
+            <div class="settings-slider-group">
+                <input type="range" class="settings-slider" id="volume-slider" min="0" max="100" value="30">
+                <span class="settings-slider-value" id="volume-value">30%</span>
+            </div>
         </div>
 
         <div class="settings-group">
@@ -1002,6 +1046,47 @@
                 <label>Haptic Feedback</label>
                 <div class="toggle-switch active" id="toggle-haptic" data-setting="haptic"></div>
             </div>
+        </div>
+
+        <div class="settings-divider"></div>
+        <div class="settings-section-label">Controls</div>
+
+        <div class="settings-group">
+            <label>DAS (Delayed Auto Shift)</label>
+            <div class="settings-slider-group">
+                <input type="range" class="settings-slider" id="das-slider" min="50" max="300" step="1" value="133">
+                <span class="settings-slider-value" id="das-value">133ms</span>
+            </div>
+        </div>
+
+        <div class="settings-group">
+            <label>ARR (Auto Repeat Rate)</label>
+            <div class="settings-slider-group">
+                <input type="range" class="settings-slider" id="arr-slider" min="0" max="80" step="1" value="10">
+                <span class="settings-slider-value" id="arr-value">10ms</span>
+            </div>
+        </div>
+
+        <div class="settings-group">
+            <label>Start Level (Classic)</label>
+            <div class="settings-slider-group">
+                <input type="range" class="settings-slider" id="start-level-slider" min="1" max="15" step="1" value="1">
+                <span class="settings-slider-value" id="start-level-value">1</span>
+            </div>
+        </div>
+
+        <div class="settings-divider"></div>
+        <div class="settings-section-label">Lifetime Stats</div>
+
+        <div class="settings-stats" id="lifetime-stats">
+            <span class="stat-key">Spiele</span><span class="stat-val" id="lt-games">0</span>
+            <span class="stat-key">Lines</span><span class="stat-val" id="lt-lines">0</span>
+            <span class="stat-key">Score</span><span class="stat-val" id="lt-score">0</span>
+            <span class="stat-key">Tetrisse</span><span class="stat-val" id="lt-tetrises">0</span>
+            <span class="stat-key">T-Spins</span><span class="stat-val" id="lt-tspins">0</span>
+            <span class="stat-key">Spielzeit</span><span class="stat-val" id="lt-playtime">0m</span>
+            <span class="stat-key">Best Score</span><span class="stat-val" id="lt-best-score">0</span>
+            <span class="stat-key">Best Level</span><span class="stat-val" id="lt-best-level">0</span>
         </div>
     </div>
 

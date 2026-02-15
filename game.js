@@ -176,7 +176,7 @@ function getDropInterval(level) {
 // --- Settings Manager ---
 class SettingsManager {
     constructor() {
-        this.defaults = { volume: 30, sfx: true, music: true, ghost: true, colorblind: false, haptic: true };
+        this.defaults = { volume: 30, sfx: true, music: true, ghost: true, colorblind: false, haptic: true, das: DEFAULT_DAS, arr: DEFAULT_ARR, startLevel: 1 };
         this.settings = { ...this.defaults };
         this.load();
     }
@@ -206,6 +206,40 @@ class SettingsManager {
         this.save();
         return this.settings[key];
     }
+}
+
+// --- Lifetime Statistics ---
+class LifetimeStats {
+    constructor() {
+        this.data = { games: 0, lines: 0, score: 0, tetrises: 0, tspins: 0, playtime: 0, bestScore: 0, bestLines: 0, bestLevel: 0 };
+        this.load();
+    }
+
+    load() {
+        try {
+            const saved = JSON.parse(localStorage.getItem('neonblocks_lifetime'));
+            if (saved) Object.assign(this.data, saved);
+        } catch(e) { /* ignore */ }
+    }
+
+    save() {
+        localStorage.setItem('neonblocks_lifetime', JSON.stringify(this.data));
+    }
+
+    record(stats) {
+        this.data.games++;
+        this.data.lines += stats.lines || 0;
+        this.data.score += stats.score || 0;
+        this.data.tetrises += stats.tetrises || 0;
+        this.data.tspins += stats.tspins || 0;
+        this.data.playtime += stats.playtime || 0;
+        if (stats.score > this.data.bestScore) this.data.bestScore = stats.score;
+        if (stats.lines > this.data.bestLines) this.data.bestLines = stats.lines;
+        if (stats.level > this.data.bestLevel) this.data.bestLevel = stats.level;
+        this.save();
+    }
+
+    get(key) { return this.data[key]; }
 }
 
 // --- Audio Engine ---
@@ -895,6 +929,7 @@ class NetworkManager {
 class NeonBlocks {
     constructor() {
         this.settingsManager = new SettingsManager();
+        this.lifetimeStats = new LifetimeStats();
 
         // --- Cache DOM elements ---
         this.dom = this._cacheDomElements();
@@ -975,8 +1010,8 @@ class NeonBlocks {
         this.playerName = '';
 
         // DAS / ARR
-        this.das = DEFAULT_DAS;
-        this.arr = DEFAULT_ARR;
+        this.das = this.settingsManager.get('das');
+        this.arr = this.settingsManager.get('arr');
         this.keys = {};
         this.dasTimer = {};
         this.arrTimer = {};
@@ -1229,14 +1264,61 @@ class NeonBlocks {
         overlay.addEventListener('click', closeSettings);
 
         const volSlider = this.dom.volumeSlider;
+        const volValue = document.getElementById('volume-value');
         volSlider.value = this.settingsManager.get('volume');
+        volValue.textContent = volSlider.value + '%';
         const handleVolume = () => {
             const val = parseInt(volSlider.value, 10);
             this.settingsManager.set('volume', Math.max(0, Math.min(100, val)));
             this.audio.setVolume(val);
+            volValue.textContent = val + '%';
         };
         volSlider.addEventListener('input', handleVolume);
         volSlider.addEventListener('change', handleVolume);
+
+        // DAS slider
+        const dasSlider = document.getElementById('das-slider');
+        const dasValue = document.getElementById('das-value');
+        dasSlider.value = this.settingsManager.get('das');
+        dasValue.textContent = dasSlider.value + 'ms';
+        const handleDAS = () => {
+            const val = parseInt(dasSlider.value, 10);
+            this.settingsManager.set('das', val);
+            this.das = val;
+            dasValue.textContent = val + 'ms';
+        };
+        dasSlider.addEventListener('input', handleDAS);
+        dasSlider.addEventListener('change', handleDAS);
+
+        // ARR slider
+        const arrSlider = document.getElementById('arr-slider');
+        const arrValue = document.getElementById('arr-value');
+        arrSlider.value = this.settingsManager.get('arr');
+        arrValue.textContent = arrSlider.value + 'ms';
+        const handleARR = () => {
+            const val = parseInt(arrSlider.value, 10);
+            this.settingsManager.set('arr', val);
+            this.arr = val;
+            arrValue.textContent = val + 'ms';
+        };
+        arrSlider.addEventListener('input', handleARR);
+        arrSlider.addEventListener('change', handleARR);
+
+        // Start level slider
+        const lvlSlider = document.getElementById('start-level-slider');
+        const lvlValue = document.getElementById('start-level-value');
+        lvlSlider.value = this.settingsManager.get('startLevel');
+        lvlValue.textContent = lvlSlider.value;
+        const handleStartLevel = () => {
+            const val = parseInt(lvlSlider.value, 10);
+            this.settingsManager.set('startLevel', val);
+            lvlValue.textContent = val;
+        };
+        lvlSlider.addEventListener('input', handleStartLevel);
+        lvlSlider.addEventListener('change', handleStartLevel);
+
+        // Update lifetime stats display
+        this._updateLifetimeStatsDisplay();
 
         // Toggle switches - use touchend + click with dedup
         document.querySelectorAll('.toggle-switch').forEach(el => {
@@ -1266,6 +1348,23 @@ class NeonBlocks {
             el.addEventListener('touchend', handleToggle, { passive: false });
             el.addEventListener('click', handleToggle);
         });
+    }
+
+    _updateLifetimeStatsDisplay() {
+        const lt = this.lifetimeStats;
+        const el = (id) => document.getElementById(id);
+        el('lt-games').textContent = lt.get('games').toLocaleString();
+        el('lt-lines').textContent = lt.get('lines').toLocaleString();
+        el('lt-score').textContent = lt.get('score').toLocaleString();
+        el('lt-tetrises').textContent = lt.get('tetrises').toLocaleString();
+        el('lt-tspins').textContent = lt.get('tspins').toLocaleString();
+        el('lt-best-score').textContent = lt.get('bestScore').toLocaleString();
+        el('lt-best-level').textContent = lt.get('bestLevel');
+        // Format playtime
+        const totalMs = lt.get('playtime');
+        const totalMin = Math.floor(totalMs / 60000);
+        if (totalMin < 60) el('lt-playtime').textContent = totalMin + 'm';
+        else el('lt-playtime').textContent = Math.floor(totalMin / 60) + 'h ' + (totalMin % 60) + 'm';
     }
 
     // --- Mode Selector ---
@@ -2087,6 +2186,13 @@ class NeonBlocks {
         localStorage.setItem('neonblocks_scores_v2', JSON.stringify(this.highScores));
         this.updateHighScoreDisplay();
 
+        // Track lifetime stats
+        this.lifetimeStats.record({
+            score: this.score, lines: this.lines, level: this.level,
+            tetrises: this.tetrisCount, tspins: this.tspinCount, playtime: elapsed,
+        });
+        this._updateLifetimeStatsDisplay();
+
         this.dom.finalScore.textContent = this.score.toLocaleString();
         this.dom.finalLevel.textContent = this.level;
         this.dom.finalLines.textContent = this.lines;
@@ -2221,7 +2327,8 @@ class NeonBlocks {
         this.holdPiece = null;
         this.holdUsed = false;
         this.nextPieces = [];
-        this.score = 0; this.level = 1; this.lines = 0;
+        const startLvl = (this.gameMode === 'classic') ? (this.settingsManager.get('startLevel') || 1) : 1;
+        this.score = 0; this.level = startLvl; this.lines = 0;
         this.combo = -1; this.maxCombo = 0;
         this.tspinCount = 0; this.tetrisCount = 0;
         this.backToBack = false; this.lastTspin = 'none';
@@ -2360,8 +2467,8 @@ class NeonBlocks {
         [leftKey, rightKey].forEach(key => {
             if (board.keys[key] && board.dasTimer[key]) {
                 const elapsed = now - board.dasTimer[key];
-                if (elapsed >= DEFAULT_DAS) {
-                    if (!board.arrTimer[key] || now - board.arrTimer[key] >= DEFAULT_ARR) {
+                if (elapsed >= this.das) {
+                    if (!board.arrTimer[key] || now - board.arrTimer[key] >= this.arr) {
                         board.movePiece(key === leftKey ? -1 : 1, 0);
                         board.arrTimer[key] = now;
                     }
