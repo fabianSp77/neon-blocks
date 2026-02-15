@@ -10,6 +10,7 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="mobile-web-app-capable" content="yes">
+    <link rel="manifest" href="manifest.json">
     <!-- Open Graph -->
     <meta property="og:title" content="NEON BLOCKS - Modernes Puzzle-Spiel">
     <meta property="og:description" content="Ein state-of-the-art Tetris-Style Puzzle-Spiel mit Neon-Grafik. Kostenlos im Browser spielen!">
@@ -890,8 +891,8 @@
     <div id="settings-overlay"></div>
 
     <!-- Settings panel -->
-    <div id="settings-panel">
-        <button class="settings-close" id="settings-close">&times;</button>
+    <div id="settings-panel" role="dialog" aria-label="Einstellungen">
+        <button class="settings-close" id="settings-close" aria-label="Schliessen">&times;</button>
         <div class="settings-title">Settings</div>
 
         <div class="settings-group">
@@ -1004,14 +1005,14 @@
 
         <!-- Main game -->
         <div id="game-container">
-            <canvas id="game-canvas"></canvas>
+            <canvas id="game-canvas" aria-label="Neon Blocks Spielfeld" tabindex="0"></canvas>
             <canvas id="confetti-canvas"></canvas>
 
             <!-- Countdown -->
             <div id="countdown-display"></div>
 
             <!-- Start overlay -->
-            <div class="overlay" id="start-overlay">
+            <div class="overlay" id="start-overlay" role="dialog" aria-label="Spielstart">
                 <h1>NEON BLOCKS</h1>
                 <p class="subtitle">Ein modernes Puzzle-Spiel</p>
 
@@ -1069,14 +1070,14 @@
             </div>
 
             <!-- Pause overlay -->
-            <div class="overlay hidden" id="pause-overlay">
+            <div class="overlay hidden" id="pause-overlay" role="dialog" aria-label="Pause">
                 <h2>PAUSE</h2>
                 <p>Druecke <kbd>P</kbd> zum Fortsetzen</p>
                 <button class="start-btn" id="resume-btn" style="margin-top:12px;font-size:12px;padding:8px 24px;">WEITER</button>
             </div>
 
             <!-- Game Over overlay -->
-            <div class="overlay hidden" id="gameover-overlay">
+            <div class="overlay hidden" id="gameover-overlay" role="dialog" aria-label="Spiel vorbei">
                 <h2>GAME OVER</h2>
                 <div id="new-highscore-msg" class="new-highscore" style="display:none">&#9733; NEUER HIGHSCORE! &#9733;</div>
                 <div class="gameover-stats">
@@ -1123,7 +1124,7 @@
             </div>
 
             <!-- VS Winner overlay -->
-            <div class="overlay hidden" id="vs-result-overlay">
+            <div class="overlay hidden" id="vs-result-overlay" role="dialog" aria-label="Ergebnis">
                 <h2 id="vs-winner-text">GEWINNER!</h2>
                 <p id="vs-result-detail"></p>
                 <div class="gameover-stats" id="vs-stats"></div>
@@ -1150,18 +1151,18 @@
     <!-- Mobile controls -->
     <div id="mobile-controls">
         <div class="mobile-row">
-            <div class="mobile-btn accent" data-action="hold">H</div>
-            <div class="mobile-btn" data-action="rotate">&#8635;</div>
-            <div class="mobile-btn" data-action="rotate180" style="font-size:14px">180</div>
-            <div class="mobile-btn accent" data-action="pause">&#9208;</div>
+            <div class="mobile-btn accent" data-action="hold" role="button" aria-label="Hold">H</div>
+            <div class="mobile-btn" data-action="rotate" role="button" aria-label="Drehen">&#8635;</div>
+            <div class="mobile-btn" data-action="rotate180" role="button" aria-label="180 Grad drehen" style="font-size:14px">180</div>
+            <div class="mobile-btn accent" data-action="pause" role="button" aria-label="Pause">&#9208;</div>
         </div>
         <div class="mobile-row">
-            <div class="mobile-btn" data-action="left">&#9664;</div>
-            <div class="mobile-btn" data-action="down">&#9660;</div>
-            <div class="mobile-btn" data-action="right">&#9654;</div>
+            <div class="mobile-btn" data-action="left" role="button" aria-label="Links">&#9664;</div>
+            <div class="mobile-btn" data-action="down" role="button" aria-label="Runter">&#9660;</div>
+            <div class="mobile-btn" data-action="right" role="button" aria-label="Rechts">&#9654;</div>
         </div>
         <div class="mobile-row">
-            <div class="mobile-btn wide" data-action="drop">DROP</div>
+            <div class="mobile-btn wide" data-action="drop" role="button" aria-label="Hard Drop">DROP</div>
         </div>
     </div>
 
@@ -1175,5 +1176,10 @@
 
     <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
     <script src="game.js"></script>
+    <script>
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('sw.js').catch(() => {});
+      }
+    </script>
 </body>
 </html>
