@@ -503,6 +503,15 @@ class NeonBlocks {
         // Mobile detect
         this.isMobile = /Android|iPhone|iPad|iPod|webOS/i.test(navigator.userAgent) || window.innerWidth <= 768;
 
+        // Move settings button into HUD on mobile
+        if (this.isMobile || window.innerWidth <= 768) {
+            const settingsBtn = document.getElementById('settings-btn');
+            const hudSlot = document.getElementById('hud-settings-slot');
+            if (settingsBtn && hudSlot) {
+                hudSlot.appendChild(settingsBtn);
+            }
+        }
+
         // High scores
         this.highScores = JSON.parse(localStorage.getItem('neonblocks_scores_v2') || '[]');
         const oldScores = JSON.parse(localStorage.getItem('neonblocks_scores') || '[]');
@@ -531,6 +540,7 @@ class NeonBlocks {
         this.setupSwipeControls();
         this.setupSettings();
         this.setupModeSelector();
+        this.setupMobileLeaderboard();
         this.updateHighScoreDisplay();
         this.resizeBg();
 
@@ -546,6 +556,7 @@ class NeonBlocks {
 
         // Recalculate after layout is fully settled (for mobile controls height)
         setTimeout(() => { this.calculateCellSize(); }, 300);
+        setTimeout(() => { this.calculateCellSize(); }, 600);
     }
 
     // --- Dynamic Cell Sizing ---
@@ -559,17 +570,24 @@ class NeonBlocks {
             // Measure actual controls/hud height, with generous fallbacks
             const controlsEl = document.getElementById('mobile-controls');
             const hudEl = document.getElementById('mobile-hud');
-            const controlsH = (controlsEl && controlsEl.offsetHeight > 0) ? controlsEl.offsetHeight : 230;
+            const lbEl = document.getElementById('mobile-leaderboard');
+            const controlsH = (controlsEl && controlsEl.offsetHeight > 0) ? controlsEl.offsetHeight : 200;
             const hudH = (hudEl && hudEl.offsetHeight > 0) ? hudEl.offsetHeight : 55;
-            const safeMargin = 30;
-            availH = vh - hudH - controlsH - safeMargin;
-            availW = vw - 10;
+            const lbH = (lbEl && lbEl.offsetHeight > 0) ? lbEl.offsetHeight : 30;
+            const safeMargin = 20;
+
+            // Account for safe areas
+            const safeTop = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--safe-top')) || 0;
+            const safeBottom = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--safe-bottom')) || 0;
+
+            availH = vh - hudH - controlsH - lbH - safeMargin - safeTop - safeBottom;
+            availW = vw - 16; // 8px padding each side
 
             // Update game-wrapper padding to account for controls
             const wrapper = document.getElementById('game-wrapper');
             if (wrapper) {
                 wrapper.style.paddingTop = (hudH + 5) + 'px';
-                wrapper.style.paddingBottom = (controlsH + 10) + 'px';
+                wrapper.style.paddingBottom = (controlsH + lbH + 5) + 'px';
             }
         } else {
             availH = vh - 60;
@@ -578,7 +596,7 @@ class NeonBlocks {
 
         const cellFromH = Math.floor(availH / ROWS);
         const cellFromW = Math.floor(availW / COLS);
-        CELL = Math.max(12, Math.min(BASE_CELL, cellFromH, cellFromW));
+        CELL = Math.max(10, Math.min(BASE_CELL, cellFromH, cellFromW));
 
         this.canvas.width = COLS * CELL;
         this.canvas.height = ROWS * CELL;
@@ -600,36 +618,54 @@ class NeonBlocks {
         const btn = document.getElementById('settings-btn');
         const closeBtn = document.getElementById('settings-close');
 
-        const openSettings = () => {
+        const openSettings = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
             panel.classList.add('open');
             overlay.classList.add('open');
             if (this.gameState === 'playing') this.togglePause();
         };
-        const closeSettings = () => {
+        const closeSettings = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
             panel.classList.remove('open');
             overlay.classList.remove('open');
         };
 
+        // Use both touch and click for reliable mobile support
+        btn.addEventListener('touchend', openSettings, { passive: false });
         btn.addEventListener('click', openSettings);
+        closeBtn.addEventListener('touchend', closeSettings, { passive: false });
         closeBtn.addEventListener('click', closeSettings);
+        overlay.addEventListener('touchend', closeSettings, { passive: false });
         overlay.addEventListener('click', closeSettings);
 
-        // Volume slider
+        // Volume slider - works with both touch drag and click
         const volSlider = document.getElementById('volume-slider');
         volSlider.value = this.settingsManager.get('volume');
-        volSlider.addEventListener('input', () => {
+        const handleVolume = () => {
             const val = parseInt(volSlider.value);
             this.settingsManager.set('volume', val);
             this.audio.setVolume(val);
-        });
+        };
+        volSlider.addEventListener('input', handleVolume);
+        volSlider.addEventListener('change', handleVolume);
 
-        // Toggle switches
+        // Toggle switches - use touchend + click with dedup
         document.querySelectorAll('.toggle-switch').forEach(el => {
             const setting = el.dataset.setting;
             if (this.settingsManager.get(setting)) el.classList.add('active');
             else el.classList.remove('active');
 
-            el.addEventListener('click', () => {
+            let lastToggleTime = 0;
+            const handleToggle = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                // Debounce to prevent double-fire from touch+click
+                const now = Date.now();
+                if (now - lastToggleTime < 300) return;
+                lastToggleTime = now;
+
                 const newVal = this.settingsManager.toggle(setting);
                 el.classList.toggle('active', newVal);
                 if (setting === 'colorblind') this.applyColorblind();
@@ -637,7 +673,11 @@ class NeonBlocks {
                     if (newVal && this.gameState === 'playing') this.audio.startMusic();
                     else this.audio.stopMusic();
                 }
-            });
+                this.haptic(5);
+            };
+
+            el.addEventListener('touchend', handleToggle, { passive: false });
+            el.addEventListener('click', handleToggle);
         });
     }
 
@@ -1440,19 +1480,43 @@ class NeonBlocks {
     }
 
     updateHighScoreDisplay() {
-        const list = document.getElementById('highscore-list');
-        list.innerHTML = '';
-        if (this.highScores.length === 0) {
-            list.innerHTML = '<li><span style="color:rgba(255,255,255,0.3)">Noch keine</span></li>';
-            return;
-        }
-        this.highScores.slice(0, 5).forEach((entry, i) => {
-            const li = document.createElement('li');
-            const name = typeof entry === 'object' ? entry.name : '???';
-            const score = typeof entry === 'object' ? entry.score : entry;
-            li.innerHTML = `<span class="hs-rank">#${i + 1}</span><span class="hs-name">${this.escapeHtml(name)}</span><span class="hs-score">${score.toLocaleString()}</span>`;
-            list.appendChild(li);
+        // Update both desktop and mobile leaderboards
+        const lists = [
+            document.getElementById('highscore-list'),
+            document.getElementById('mobile-highscore-list')
+        ];
+
+        lists.forEach(list => {
+            if (!list) return;
+            list.innerHTML = '';
+            if (this.highScores.length === 0) {
+                list.innerHTML = '<li><span style="color:rgba(255,255,255,0.3)">Noch keine Scores</span></li>';
+                return;
+            }
+            this.highScores.slice(0, 10).forEach((entry, i) => {
+                const li = document.createElement('li');
+                const name = typeof entry === 'object' ? entry.name : '???';
+                const score = typeof entry === 'object' ? entry.score : entry;
+                const level = typeof entry === 'object' ? (entry.level || '-') : '-';
+                const lines = typeof entry === 'object' ? (entry.lines || '-') : '-';
+                li.innerHTML = `<span class="hs-rank">#${i + 1}</span><span class="hs-name">${this.escapeHtml(name)}</span><span class="hs-score">${score.toLocaleString()}</span>`;
+                list.appendChild(li);
+            });
         });
+    }
+
+    setupMobileLeaderboard() {
+        const toggle = document.getElementById('lb-toggle');
+        const lb = document.getElementById('mobile-leaderboard');
+        if (!toggle || !lb) return;
+
+        const handleToggle = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            lb.classList.toggle('expanded');
+        };
+        toggle.addEventListener('touchend', handleToggle, { passive: false });
+        toggle.addEventListener('click', handleToggle);
     }
 
     escapeHtml(str) {
@@ -1481,12 +1545,12 @@ class NeonBlocks {
 
     updateHoldDisplay() {
         this.drawPiecePreview('hold-canvas', this.holdPiece);
-        this.drawPiecePreview('hud-hold', this.holdPiece, 10);
+        this.drawPiecePreview('hud-hold', this.holdPiece, 8);
     }
 
     updateNextDisplay() {
         for (let i = 0; i < 3; i++) this.drawPiecePreview(`next-${i}`, this.nextPieces[i]);
-        this.drawPiecePreview('hud-next', this.nextPieces[0], 10);
+        this.drawPiecePreview('hud-next', this.nextPieces[0], 8);
     }
 
     // --- Rendering ---
@@ -1672,6 +1736,8 @@ class NeonBlocks {
             }
 
             this.updateModeTimer();
+            // LIVE UI update every frame
+            this.updateUI();
         }
 
         if (this.screenShake > 0) this.screenShake--;
