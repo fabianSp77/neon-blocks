@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>NEON BLOCKS</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Rajdhani:wght@300;500;700&display=swap');
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --neon-cyan: #00f0ff;
+            --neon-pink: #ff00aa;
+            --neon-purple: #b000ff;
+            --neon-yellow: #ffe600;
+            --neon-green: #00ff6a;
+            --neon-orange: #ff6a00;
+            --neon-blue: #0066ff;
+            --bg-dark: #0a0a1a;
+            --bg-panel: rgba(10, 10, 30, 0.85);
+        }
+
+        body {
+            background: var(--bg-dark);
+            color: #fff;
+            font-family: 'Rajdhani', sans-serif;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        #bg-canvas {
+            position: fixed;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            z-index: 0;
+        }
+
+        #game-wrapper {
+            position: relative;
+            z-index: 1;
+            display: flex;
+            gap: 20px;
+            align-items: flex-start;
+            max-height: 100vh;
+            padding: 10px;
+        }
+
+        .side-panel {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            width: 160px;
+        }
+
+        .panel-box {
+            background: var(--bg-panel);
+            border: 1px solid rgba(0, 240, 255, 0.2);
+            border-radius: 8px;
+            padding: 12px;
+            backdrop-filter: blur(10px);
+        }
+
+        .panel-box h3 {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            color: var(--neon-cyan);
+            text-align: center;
+            margin-bottom: 8px;
+            text-shadow: 0 0 10px var(--neon-cyan);
+        }
+
+        #score-display, #level-display, #lines-display {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 22px;
+            text-align: center;
+            color: #fff;
+            text-shadow: 0 0 15px rgba(255,255,255,0.5);
+        }
+
+        #player-name-display {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 12px;
+            text-align: center;
+            color: var(--neon-cyan);
+            text-shadow: 0 0 8px var(--neon-cyan);
+            margin-bottom: 4px;
+            letter-spacing: 1px;
+        }
+
+        #combo-display {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 14px;
+            text-align: center;
+            color: var(--neon-yellow);
+            text-shadow: 0 0 10px var(--neon-yellow);
+            min-height: 20px;
+        }
+
+        #hold-canvas { display: block; margin: 0 auto; }
+        .next-piece-canvas { display: block; margin: 4px auto; }
+
+        #game-container { position: relative; }
+
+        #game-canvas {
+            display: block;
+            border: 2px solid rgba(0, 240, 255, 0.3);
+            border-radius: 4px;
+            box-shadow: 0 0 30px rgba(0, 240, 255, 0.1),
+                        inset 0 0 30px rgba(0, 240, 255, 0.05);
+        }
+
+        /* Overlays */
+        .overlay {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            background: rgba(0, 0, 0, 0.85);
+            backdrop-filter: blur(5px);
+            border-radius: 4px;
+            z-index: 10;
+            transition: opacity 0.3s;
+        }
+
+        .overlay.hidden { opacity: 0; pointer-events: none; }
+
+        .overlay h1 {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 36px;
+            margin-bottom: 8px;
+            background: linear-gradient(135deg, var(--neon-cyan), var(--neon-pink));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            filter: drop-shadow(0 0 20px rgba(0, 240, 255, 0.5));
+        }
+
+        .overlay h2 {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 20px;
+            color: var(--neon-pink);
+            margin-bottom: 20px;
+            text-shadow: 0 0 15px var(--neon-pink);
+        }
+
+        .overlay p {
+            font-size: 16px;
+            color: rgba(255,255,255,0.7);
+            margin-bottom: 6px;
+        }
+
+        .overlay .subtitle {
+            font-size: 14px;
+            color: rgba(255,255,255,0.4);
+            margin-bottom: 16px;
+        }
+
+        /* Name input */
+        .name-input-group {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin: 16px 0;
+            gap: 8px;
+        }
+
+        .name-input-group label {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 12px;
+            color: var(--neon-cyan);
+            text-transform: uppercase;
+            letter-spacing: 2px;
+        }
+
+        #player-name-input {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 18px;
+            width: 200px;
+            padding: 8px 16px;
+            background: rgba(0, 240, 255, 0.05);
+            border: 2px solid rgba(0, 240, 255, 0.4);
+            border-radius: 4px;
+            color: var(--neon-cyan);
+            text-align: center;
+            text-transform: uppercase;
+            letter-spacing: 3px;
+            outline: none;
+            transition: all 0.3s;
+        }
+
+        #player-name-input:focus {
+            border-color: var(--neon-cyan);
+            box-shadow: 0 0 20px rgba(0, 240, 255, 0.3);
+            background: rgba(0, 240, 255, 0.1);
+        }
+
+        #player-name-input::placeholder {
+            color: rgba(0, 240, 255, 0.3);
+            font-size: 12px;
+            text-transform: none;
+            letter-spacing: 1px;
+        }
+
+        .start-btn {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 16px;
+            padding: 12px 40px;
+            margin-top: 12px;
+            background: transparent;
+            color: var(--neon-cyan);
+            border: 2px solid var(--neon-cyan);
+            border-radius: 4px;
+            cursor: pointer;
+            text-transform: uppercase;
+            letter-spacing: 3px;
+            transition: all 0.3s;
+            outline: none;
+        }
+
+        .start-btn:hover, .start-btn:focus {
+            background: rgba(0, 240, 255, 0.15);
+            box-shadow: 0 0 30px rgba(0, 240, 255, 0.3);
+            transform: scale(1.05);
+        }
+
+        .start-btn:disabled {
+            opacity: 0.3;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        /* Game Over stats */
+        .gameover-stats {
+            display: grid;
+            grid-template-columns: auto auto;
+            gap: 4px 20px;
+            margin: 12px 0;
+        }
+
+        .gameover-stats .stat-label {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 11px;
+            color: rgba(255,255,255,0.4);
+            text-align: right;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .gameover-stats .stat-value {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 14px;
+            color: var(--neon-cyan);
+            text-shadow: 0 0 8px var(--neon-cyan);
+        }
+
+        .gameover-stats .stat-value.highlight {
+            font-size: 22px;
+            color: var(--neon-yellow);
+            text-shadow: 0 0 12px var(--neon-yellow);
+        }
+
+        .new-highscore {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 14px;
+            color: var(--neon-yellow);
+            text-shadow: 0 0 15px var(--neon-yellow);
+            animation: newHsPulse 0.6s ease-in-out infinite alternate;
+            margin-bottom: 8px;
+        }
+
+        @keyframes newHsPulse {
+            from { opacity: 0.6; transform: scale(1); }
+            to { opacity: 1; transform: scale(1.05); }
+        }
+
+        /* Score popup */
+        .score-popup {
+            position: absolute;
+            font-family: 'Orbitron', sans-serif;
+            font-size: 18px;
+            font-weight: 700;
+            pointer-events: none;
+            z-index: 20;
+            text-shadow: 0 0 10px currentColor;
+            animation: scoreFloat 1s ease-out forwards;
+        }
+
+        @keyframes scoreFloat {
+            0% { opacity: 1; transform: translateY(0) scale(1); }
+            100% { opacity: 0; transform: translateY(-60px) scale(1.3); }
+        }
+
+        /* Mobile controls */
+        #mobile-controls {
+            display: none;
+            position: fixed;
+            bottom: 0; left: 0; right: 0;
+            padding: 10px;
+            z-index: 100;
+            gap: 8px;
+        }
+
+        .mobile-row { display: flex; justify-content: center; gap: 8px; }
+
+        .mobile-btn {
+            width: 60px; height: 60px;
+            background: rgba(0, 240, 255, 0.1);
+            border: 1px solid rgba(0, 240, 255, 0.3);
+            border-radius: 12px;
+            color: var(--neon-cyan);
+            font-size: 24px;
+            display: flex; align-items: center; justify-content: center;
+            cursor: pointer;
+            user-select: none; -webkit-user-select: none;
+            touch-action: manipulation;
+        }
+
+        .mobile-btn:active { background: rgba(0, 240, 255, 0.3); }
+        .mobile-btn.wide { width: 130px; }
+
+        #stats-bar {
+            display: flex;
+            gap: 16px;
+            justify-content: center;
+            margin-top: 8px;
+            font-size: 11px;
+            color: rgba(255,255,255,0.4);
+            font-family: 'Rajdhani', sans-serif;
+        }
+
+        .high-score-list { list-style: none; padding: 0; }
+
+        .high-score-list li {
+            display: flex;
+            justify-content: space-between;
+            font-size: 12px;
+            padding: 2px 0;
+            color: rgba(255,255,255,0.5);
+            gap: 6px;
+        }
+
+        .high-score-list li .hs-rank { color: rgba(255,255,255,0.3); min-width: 20px; }
+        .high-score-list li .hs-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .high-score-list li .hs-score { color: rgba(255,255,255,0.7); font-family: 'Orbitron', sans-serif; font-size: 11px; }
+
+        .high-score-list li:first-child { color: var(--neon-yellow); }
+        .high-score-list li:first-child .hs-score { color: var(--neon-yellow); }
+
+        .controls-info {
+            font-size: 12px;
+            color: rgba(255,255,255,0.4);
+            text-align: center;
+            line-height: 1.8;
+        }
+
+        .controls-info kbd {
+            background: rgba(255,255,255,0.1);
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Orbitron', sans-serif;
+            font-size: 10px;
+        }
+
+        @media (max-width: 768px) {
+            .side-panel { display: none; }
+            #mobile-controls { display: flex; flex-direction: column; }
+            #game-wrapper { padding: 5px; }
+        }
+
+        @media (max-height: 700px) {
+            .panel-box { padding: 8px; }
+            .panel-box h3 { font-size: 9px; margin-bottom: 4px; }
+            #score-display, #level-display, #lines-display { font-size: 18px; }
+        }
+    </style>
+</head>
+<body>
+    <canvas id="bg-canvas"></canvas>
+
+    <div id="game-wrapper">
+        <!-- Left panel -->
+        <div class="side-panel" id="left-panel">
+            <div class="panel-box">
+                <h3>Hold</h3>
+                <canvas id="hold-canvas" width="100" height="80"></canvas>
+            </div>
+            <div class="panel-box">
+                <div id="player-name-display"></div>
+                <h3>Score</h3>
+                <div id="score-display">0</div>
+            </div>
+            <div class="panel-box">
+                <h3>Level</h3>
+                <div id="level-display">1</div>
+            </div>
+            <div class="panel-box">
+                <h3>Lines</h3>
+                <div id="lines-display">0</div>
+            </div>
+            <div class="panel-box">
+                <div id="combo-display"></div>
+            </div>
+            <div class="panel-box">
+                <h3>Controls</h3>
+                <div class="controls-info">
+                    <kbd>&larr;</kbd> <kbd>&rarr;</kbd> Move<br>
+                    <kbd>&uarr;</kbd> Rotate<br>
+                    <kbd>&darr;</kbd> Soft Drop<br>
+                    <kbd>Space</kbd> Hard Drop<br>
+                    <kbd>C</kbd> Hold<br>
+                    <kbd>P</kbd> Pause
+                </div>
+            </div>
+        </div>
+
+        <!-- Main game -->
+        <div id="game-container">
+            <canvas id="game-canvas"></canvas>
+
+            <!-- Start overlay -->
+            <div class="overlay" id="start-overlay">
+                <h1>NEON BLOCKS</h1>
+                <p class="subtitle">Ein modernes Puzzle-Spiel</p>
+                <div class="name-input-group">
+                    <label for="player-name-input">Dein Name</label>
+                    <input type="text" id="player-name-input" maxlength="10" placeholder="Name eingeben..." autocomplete="off" spellcheck="false">
+                </div>
+                <button class="start-btn" id="start-btn">START</button>
+            </div>
+
+            <!-- Pause overlay -->
+            <div class="overlay hidden" id="pause-overlay">
+                <h2>PAUSE</h2>
+                <p>Druecke <kbd>P</kbd> zum Fortsetzen</p>
+            </div>
+
+            <!-- Game Over overlay -->
+            <div class="overlay hidden" id="gameover-overlay">
+                <h2>GAME OVER</h2>
+                <div id="new-highscore-msg" class="new-highscore" style="display:none">&#9733; NEUER HIGHSCORE! &#9733;</div>
+                <div class="gameover-stats">
+                    <span class="stat-label">Score</span>
+                    <span class="stat-value highlight" id="final-score">0</span>
+                    <span class="stat-label">Level</span>
+                    <span class="stat-value" id="final-level">1</span>
+                    <span class="stat-label">Lines</span>
+                    <span class="stat-value" id="final-lines">0</span>
+                    <span class="stat-label">T-Spins</span>
+                    <span class="stat-value" id="final-tspins">0</span>
+                    <span class="stat-label">Tetrisse</span>
+                    <span class="stat-value" id="final-tetrises">0</span>
+                    <span class="stat-label">Max Combo</span>
+                    <span class="stat-value" id="final-combo">0</span>
+                </div>
+                <button class="start-btn" id="restart-btn">NOCHMAL</button>
+            </div>
+
+            <div id="stats-bar">
+                <span>T-Spins: <span id="tspin-count">0</span></span>
+                <span>Tetrisse: <span id="tetris-count">0</span></span>
+                <span>Max Combo: <span id="max-combo">0</span></span>
+            </div>
+        </div>
+
+        <!-- Right panel -->
+        <div class="side-panel" id="right-panel">
+            <div class="panel-box">
+                <h3>Next</h3>
+                <canvas class="next-piece-canvas" id="next-0" width="100" height="80"></canvas>
+                <canvas class="next-piece-canvas" id="next-1" width="100" height="60"></canvas>
+                <canvas class="next-piece-canvas" id="next-2" width="100" height="60"></canvas>
+            </div>
+            <div class="panel-box">
+                <h3>High Scores</h3>
+                <ul class="high-score-list" id="highscore-list"></ul>
+            </div>
+        </div>
+    </div>
+
+    <!-- Mobile controls -->
+    <div id="mobile-controls">
+        <div class="mobile-row">
+            <div class="mobile-btn" data-action="rotate">&#8635;</div>
+            <div class="mobile-btn" data-action="hold">H</div>
+        </div>
+        <div class="mobile-row">
+            <div class="mobile-btn" data-action="left">&#9664;</div>
+            <div class="mobile-btn" data-action="down">&#9660;</div>
+            <div class="mobile-btn" data-action="right">&#9654;</div>
+        </div>
+        <div class="mobile-row">
+            <div class="mobile-btn wide" data-action="drop">DROP</div>
+        </div>
+    </div>
+
+    <script src="game.js"></script>
+</body>
+</html>
