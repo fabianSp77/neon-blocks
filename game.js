@@ -826,6 +826,24 @@ class NetworkManager {
         this.onData = null;
         this.onDisconnect = null;
         this.onError = null;
+        this.onReconnect = null;
+        this.onPingUpdate = null;
+
+        // Ping measurement
+        this._pingInterval = null;
+        this._pingSentAt = 0;
+        this.ping = 0;
+
+        // Reliable message queue (for critical messages)
+        this._msgSeq = 0;
+        this._pendingAcks = new Map(); // seq -> { data, timer, retries }
+        this._receivedSeqs = new Set();
+
+        // Reconnection
+        this._reconnecting = false;
+        this._reconnectAttempts = 0;
+        this._maxReconnectAttempts = 5;
+        this._destroyed = false;
     }
 
     _generateRoomCode() {
@@ -840,6 +858,7 @@ class NetworkManager {
             this.roomCode = this._generateRoomCode();
             const peerId = 'neonblocks-' + this.roomCode;
             this.isHost = true;
+            this._destroyed = false;
 
             this.peer = new Peer(peerId, { debug: 0 });
 
@@ -865,10 +884,11 @@ class NetworkManager {
     joinRoom(code) {
         return new Promise((resolve, reject) => {
             this.roomCode = code.toUpperCase().trim();
-            const peerId = 'neonblocks-join-' + Date.now();
+            this._joinPeerId = 'neonblocks-join-' + Date.now();
             this.isHost = false;
+            this._destroyed = false;
 
-            this.peer = new Peer(peerId, { debug: 0 });
+            this.peer = new Peer(this._joinPeerId, { debug: 0 });
 
             this.peer.on('open', () => {
                 const conn = this.peer.connect('neonblocks-' + this.roomCode, { reliable: true });
@@ -894,15 +914,23 @@ class NetworkManager {
 
     _setupConnection(conn) {
         conn.on('open', () => {
+            this._reconnecting = false;
+            this._reconnectAttempts = 0;
+            this._startPing();
             if (this.onConnect) this.onConnect();
         });
 
         conn.on('data', (data) => {
-            if (this.onData) this.onData(data);
+            this._handleIncoming(data);
         });
 
         conn.on('close', () => {
-            if (this.onDisconnect) this.onDisconnect();
+            this._stopPing();
+            if (!this._destroyed) {
+                this._attemptReconnect();
+            } else {
+                if (this.onDisconnect) this.onDisconnect();
+            }
         });
 
         conn.on('error', (err) => {
@@ -910,14 +938,141 @@ class NetworkManager {
         });
 
         // If connection was already open (joiner side), fire connect immediately
-        if (conn.open && this.onConnect) this.onConnect();
+        if (conn.open) {
+            this._reconnecting = false;
+            this._reconnectAttempts = 0;
+            this._startPing();
+            if (this.onConnect) this.onConnect();
+        }
     }
 
+    _handleIncoming(data) {
+        if (!data) return;
+        // Internal protocol messages
+        if (data._ping) { this.send({ _pong: data._ping }); return; }
+        if (data._pong) { this.ping = Math.round(performance.now() - data._pong); if (this.onPingUpdate) this.onPingUpdate(this.ping); return; }
+        if (data._ack) { this._handleAck(data._ack); return; }
+        // Reliable message: send ACK and deduplicate
+        if (data._seq !== undefined) {
+            this.send({ _ack: data._seq });
+            if (this._receivedSeqs.has(data._seq)) return; // duplicate
+            this._receivedSeqs.add(data._seq);
+            // Prune old sequence numbers to prevent memory growth
+            if (this._receivedSeqs.size > 200) {
+                const arr = [...this._receivedSeqs].sort((a, b) => a - b);
+                for (let i = 0; i < 100; i++) this._receivedSeqs.delete(arr[i]);
+            }
+        }
+        if (this.onData) this.onData(data);
+    }
+
+    _handleAck(seq) {
+        const pending = this._pendingAcks.get(seq);
+        if (pending) {
+            clearTimeout(pending.timer);
+            this._pendingAcks.delete(seq);
+        }
+    }
+
+    _startPing() {
+        this._stopPing();
+        this._pingInterval = setInterval(() => {
+            if (this.conn && this.conn.open) {
+                this._pingSentAt = performance.now();
+                this.send({ _ping: this._pingSentAt });
+            }
+        }, 2000);
+    }
+
+    _stopPing() {
+        if (this._pingInterval) { clearInterval(this._pingInterval); this._pingInterval = null; }
+    }
+
+    _attemptReconnect() {
+        if (this._destroyed || this._reconnecting) return;
+        if (this._reconnectAttempts >= this._maxReconnectAttempts) {
+            if (this.onDisconnect) this.onDisconnect();
+            return;
+        }
+        this._reconnecting = true;
+        this._reconnectAttempts++;
+        const delay = Math.min(1000 * Math.pow(1.5, this._reconnectAttempts - 1), 5000);
+
+        setTimeout(() => {
+            if (this._destroyed) return;
+            try {
+                if (!this.isHost && this.peer && !this.peer.destroyed) {
+                    const conn = this.peer.connect('neonblocks-' + this.roomCode, { reliable: true });
+                    this.conn = conn;
+                    conn.on('open', () => {
+                        this._setupConnection(conn);
+                        if (this.onReconnect) this.onReconnect();
+                    });
+                    conn.on('error', () => {
+                        this._reconnecting = false;
+                        this._attemptReconnect();
+                    });
+                    // Timeout for this attempt
+                    setTimeout(() => {
+                        if (this._reconnecting && (!conn.open)) {
+                            this._reconnecting = false;
+                            this._attemptReconnect();
+                        }
+                    }, 4000);
+                } else if (this.isHost && this.peer && !this.peer.destroyed) {
+                    // Host waits for joiner to reconnect
+                    this._reconnecting = false;
+                    setTimeout(() => {
+                        if (!this.conn || !this.conn.open) this._attemptReconnect();
+                    }, 3000);
+                } else {
+                    this._reconnecting = false;
+                    if (this.onDisconnect) this.onDisconnect();
+                }
+            } catch (_) {
+                this._reconnecting = false;
+                if (this.onDisconnect) this.onDisconnect();
+            }
+        }, delay);
+    }
+
+    /** Send a message. Non-critical (fire-and-forget). */
     send(data) {
         if (this.conn && this.conn.open) this.conn.send(data);
     }
 
+    /** Send a critical message with retry until ACK received. */
+    sendReliable(data) {
+        const seq = this._msgSeq++;
+        data._seq = seq;
+        this.send(data);
+
+        const retry = (attempt) => {
+            if (attempt > 4 || this._destroyed) { this._pendingAcks.delete(seq); return; }
+            const timer = setTimeout(() => {
+                this.send(data);
+                retry(attempt + 1);
+            }, 300 * attempt);
+            this._pendingAcks.set(seq, { data, timer, retries: attempt });
+        };
+        retry(1);
+    }
+
+    get isConnected() {
+        return this.conn && this.conn.open;
+    }
+
+    get isReconnecting() {
+        return this._reconnecting;
+    }
+
     destroy() {
+        this._destroyed = true;
+        this._stopPing();
+        // Clear pending reliable messages
+        for (const [, pending] of this._pendingAcks) clearTimeout(pending.timer);
+        this._pendingAcks.clear();
+        this._receivedSeqs.clear();
         if (this.conn) { try { this.conn.close(); } catch (_) { /* already closed */ } }
         if (this.peer) { try { this.peer.destroy(); } catch (_) { /* already destroyed */ } }
         this.conn = null;
@@ -1158,6 +1313,10 @@ class NeonBlocks {
             onlineStatus: document.getElementById('online-status'),
             onlineRoomDisplay: document.getElementById('online-room-display'),
             onlineRoomCode: document.getElementById('online-room-code'),
+            // Online HUD extras
+            vsPing: document.getElementById('vs-ping'),
+            vsReconnecting: document.getElementById('vs-reconnecting'),
+            vsRematchStatus: document.getElementById('vs-rematch-status'),
         };
     }
 
@@ -1467,7 +1626,7 @@ class NeonBlocks {
         this.network.onConnect = () => {
             this._setOnlineStatus('Gegner verbunden! Spiel startet...', 'success');
             // Send own name to opponent
-            this.network.send({
+            this.network.sendReliable({
                 type: 'hello',
                 name: this._sanitizePlayerName(this.dom.playerNameInput.value),
             });
@@ -1482,13 +1641,37 @@ class NeonBlocks {
         this.network.onData = (data) => this._onlineHandleData(data);
 
         this.network.onDisconnect = () => {
-            if (this.gameState === 'playing') {
+            if (this.dom.vsReconnecting) this.dom.vsReconnecting.style.display = 'none';
+            if (this.dom.vsPing) this.dom.vsPing.style.display = 'none';
+            if (this.gameState === 'playing' || this.gameState === 'paused') {
                 this.gameState = 'gameover';
                 this.audio.stopMusic();
                 this._onlineShowDisconnect();
             } else {
                 this._setOnlineStatus('Gegner hat die Verbindung getrennt.', 'error');
                 this._resetOnlineLobby();
+            }
+        };
+
+        this.network.onReconnect = () => {
+            if (this.dom.vsReconnecting) this.dom.vsReconnecting.style.display = 'none';
+            // Re-send current name
+            this.network.sendReliable({
+                type: 'hello',
+                name: this._sanitizePlayerName(this.dom.playerNameInput.value),
+            });
+            // Resume if paused due to disconnect
+            if (this.gameState === 'paused' && this._pausedByDisconnect) {
+                this._pausedByDisconnect = false;
+                this.toggleOnlinePause();
+            }
+        };
+
+        this.network.onPingUpdate = (ping) => {
+            if (this.dom.vsPing && this.gameMode === 'online') {
+                this.dom.vsPing.style.display = '';
+                this.dom.vsPing.textContent = ping + 'ms';
+                this.dom.vsPing.className = 'vs-ping ' + (ping < 80 ? 'ping-good' : ping < 150 ? 'ping-ok' : 'ping-bad');
             }
         };
 
@@ -1506,6 +1689,7 @@ class NeonBlocks {
         switch (data.type) {
             case 'hello':
                 this.p2Name = this._sanitizePlayerName(data.name);
+                if (this.dom.vsP2Name) this.dom.vsP2Name.textContent = this.p2Name;
                 break;
 
             case 'state': {
@@ -1523,6 +1707,7 @@ class NeonBlocks {
                 remote.impactFlash = data.impact || 0;
                 remote.impactFlashRows = data.impactRows || [];
                 remote.levelUpFlash = data.levelFlash || 0;
+                remote.pendingGarbage = data.pendGarbage || 0;
                 // Reconstruct current piece for rendering
                 if (data.piece) {
                     remote.currentPiece = {
@@ -1542,9 +1727,7 @@ class NeonBlocks {
             case 'garbage':
                 if (this.vsBoards && this.vsBoards[0].alive) {
                     this.vsBoards[0].pendingGarbage += data.count;
-                    const attackEl = this.dom.vsP2Attack;
-                    attackEl.textContent = `+${data.count}`;
-                    setTimeout(() => { attackEl.textContent = ''; }, 800);
+                    this._showIncomingGarbage(data.count);
                 }
                 break;
 
@@ -1562,9 +1745,53 @@ class NeonBlocks {
                 break;
 
             case 'rematch':
-                if (this.gameState === 'gameover') this.startGame();
+                this._onlineRematchRequested = true;
+                if (this._onlineRematchSent) {
+                    // Both players want rematch
+                    this.startGame();
+                } else {
+                    // Show that opponent wants rematch
+                    if (this.dom.vsRematchStatus) {
+                        this.dom.vsRematchStatus.style.display = '';
+                        this.dom.vsRematchStatus.textContent = this.p2Name + ' will nochmal spielen!';
+                    }
+                }
+                break;
+
+            case 'pause':
+                if (this.gameState === 'playing') {
+                    this._onlinePaused = true;
+                    this.gameState = 'paused';
+                    this.audio.stopMusic();
+                    this._showOnlinePauseOverlay(this.p2Name + ' HAT PAUSIERT');
+                }
+                break;
+
+            case 'unpause':
+                if (this.gameState === 'paused' && this._onlinePaused) {
+                    this._onlinePaused = false;
+                    this._hideOnlinePauseOverlay();
+                    this.gameState = 'playing';
+                    this.lastDrop = performance.now();
+                    if (this.vsBoards) this.vsBoards[0].lastDrop = performance.now();
+                    this.audio.startMusic();
+                }
+                break;
+
+            case 'countdownSync':
+                // Opponent is ready, synchronize countdown
+                this._opponentCountdownReady = true;
                 break;
         }
+    }
+
+    _showIncomingGarbage(count) {
+        const attackEl = this.dom.vsP2Attack;
+        attackEl.textContent = `+${count}`;
+        attackEl.style.animation = 'none';
+        attackEl.offsetHeight; // reflow
+        attackEl.style.animation = '';
+        setTimeout(() => { if (attackEl.textContent === `+${count}`) attackEl.textContent = ''; }, 1200);
     }
 
     _onlineSendState() {
@@ -1590,6 +1817,7 @@ class NeonBlocks {
             impact: local.impactFlash,
             impactRows: local.impactFlashRows,
             levelFlash: local.levelUpFlash,
+            pendGarbage: local.pendingGarbage,
         });
     }
 
@@ -1603,6 +1831,43 @@ class NeonBlocks {
 
         this.dom.vsResultOverlay.classList.remove('hidden');
         this.audio.play('gameover');
+    }
+
+    /** Toggle online pause (synced with opponent). */
+    toggleOnlinePause() {
+        if (this.gameState === 'playing') {
+            this.gameState = 'paused';
+            this._onlinePaused = true;
+            this.audio.stopMusic();
+            this.network.sendReliable({ type: 'pause' });
+            this._showOnlinePauseOverlay('PAUSE');
+        } else if (this.gameState === 'paused' && this._onlinePaused) {
+            this._onlinePaused = false;
+            this.network.sendReliable({ type: 'unpause' });
+            this._hideOnlinePauseOverlay();
+            this.gameState = 'playing';
+            this.lastDrop = performance.now();
+            if (this.vsBoards) this.vsBoards[0].lastDrop = performance.now();
+            this.audio.startMusic();
+        }
+    }
+
+    _showOnlinePauseOverlay(text) {
+        if (this._onlinePauseEl) return;
+        const el = document.createElement('div');
+        el.className = 'vs-pause-overlay';
+        el.textContent = text;
+        el.id = 'vs-pause-overlay';
+        const container = this.dom.gameContainer;
+        if (container) container.appendChild(el);
+        this._onlinePauseEl = el;
+    }
+
+    _hideOnlinePauseOverlay() {
+        if (this._onlinePauseEl) {
+            this._onlinePauseEl.remove();
+            this._onlinePauseEl = null;
+        }
     }
 
     // --- Background ---
@@ -2260,6 +2525,15 @@ class NeonBlocks {
             this.p2Name = 'GEGNER';
         }
 
+        // Reset online rematch state
+        this._onlineRematchSent = false;
+        this._onlineRematchRequested = false;
+        this._onlinePaused = false;
+        this._pausedByDisconnect = false;
+        this._hideOnlinePauseOverlay();
+        if (this.dom.vsRematchStatus) this.dom.vsRematchStatus.style.display = 'none';
+        if (this.dom.vsRestartBtn) { this.dom.vsRestartBtn.textContent = 'NOCHMAL'; this.dom.vsRestartBtn.disabled = false; }
+
         this.audio.init();
 
         this.dom.startOverlay.classList.add('hidden');
@@ -2269,7 +2543,8 @@ class NeonBlocks {
 
         // Countdown then start
         this.gameState = 'countdown';
-        this.startCountdown(() => {
+
+        const beginPlay = () => {
             if (this.gameMode === 'vs') {
                 this._initVsMode();
             } else if (this.gameMode === 'online') {
@@ -2284,7 +2559,31 @@ class NeonBlocks {
             this.modeStartTime = Date.now();
             this.audio.startMusic();
             this.canvas.focus();
-        });
+        };
+
+        if (this.gameMode === 'online' && this.network) {
+            // Synchronized countdown: signal readiness, wait for opponent
+            this._opponentCountdownReady = false;
+            this.network.sendReliable({ type: 'countdownSync' });
+            const waitForSync = () => {
+                if (this._opponentCountdownReady) {
+                    this.startCountdown(beginPlay);
+                } else {
+                    // Show waiting message briefly then start anyway after timeout
+                    this._countdownSyncTimer = setTimeout(() => {
+                        if (this._opponentCountdownReady) {
+                            this.startCountdown(beginPlay);
+                        } else {
+                            // Opponent might already be counting down, don't wait forever
+                            this.startCountdown(beginPlay);
+                        }
+                    }, 1500);
+                }
+            };
+            waitForSync();
+        } else {
+            this.startCountdown(beginPlay);
+        }
     }
 
     /** Initialize Online 1v1 mode - like VS but only local board runs game logic. */
@@ -2432,8 +2731,8 @@ class NeonBlocks {
             // Send attack to opponent
             if (result.attack > 0) {
                 if (this.gameMode === 'online' && this.network && board.playerNum === 1) {
-                    // Online: send garbage to remote opponent
-                    this.network.send({ type: 'garbage', count: result.attack });
+                    // Online: send garbage to remote opponent (reliable for garbage, fire-and-forget for sound)
+                    this.network.sendReliable({ type: 'garbage', count: result.attack });
                     this.network.send({ type: 'lineClear', isTetris: result.isTetris, isTspin: result.isTspin });
                 } else {
                     // Local VS: apply directly
@@ -2485,7 +2784,7 @@ class NeonBlocks {
 
         // Online: notify opponent that we lost
         if (this.gameMode === 'online' && this.network && losingBoard.playerNum === 1) {
-            this.network.send({ type: 'gameover' });
+            this.network.sendReliable({ type: 'gameover' });
         }
 
         const winnerName = losingBoard.playerNum === 1 ? this.p2Name : this.playerName;
@@ -2664,11 +2963,37 @@ class NeonBlocks {
             }
         }
 
-        // Pending garbage indicator (red bar on left side)
+        // Pending garbage indicator (animated red bar on left side with count)
         if (board.pendingGarbage > 0) {
-            const garbageHeight = Math.min(board.pendingGarbage, ROWS) * CELL;
-            ctx.fillStyle = 'rgba(255,0,68,0.6)';
-            ctx.fillRect(0, ROWS * CELL - garbageHeight, 3, garbageHeight);
+            const garbageRows = Math.min(board.pendingGarbage, ROWS);
+            const garbageHeight = garbageRows * CELL;
+            const barX = 0;
+            const barY = ROWS * CELL - garbageHeight;
+            const barW = 5;
+            // Pulsing glow
+            const pulse = (Math.sin(performance.now() * 0.006) + 1) * 0.5;
+            const alpha = 0.5 + pulse * 0.3;
+            // Bar gradient
+            const grad = ctx.createLinearGradient(barX, barY, barX, ROWS * CELL);
+            grad.addColorStop(0, `rgba(255,0,68,${alpha * 0.7})`);
+            grad.addColorStop(1, `rgba(255,0,68,${alpha})`);
+            ctx.fillStyle = grad;
+            ctx.fillRect(barX, barY, barW, garbageHeight);
+            // Glow effect
+            ctx.shadowColor = 'rgba(255,0,68,0.8)';
+            ctx.shadowBlur = 6;
+            ctx.fillRect(barX, barY, barW, garbageHeight);
+            ctx.shadowBlur = 0;
+            // Count label
+            if (board.pendingGarbage >= 2) {
+                ctx.save();
+                ctx.font = `bold ${Math.max(8, CELL * 0.4)}px Orbitron, monospace`;
+                ctx.fillStyle = '#ff0044';
+                ctx.textAlign = 'left';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(board.pendingGarbage.toString(), barW + 2, barY + garbageHeight * 0.5);
+                ctx.restore();
+            }
         }
 
         // Border
@@ -2717,8 +3042,12 @@ class NeonBlocks {
             }
 
             if (e.key === 'p' || e.key === 'P' || e.key === 'Escape') {
-                // No pause in online mode
-                if (this.gameMode === 'online') return;
+                if (this.gameMode === 'online' && this.network) {
+                    if (this.gameState === 'playing' || (this.gameState === 'paused' && this._onlinePaused)) {
+                        e.preventDefault(); this.toggleOnlinePause();
+                    }
+                    return;
+                }
                 if (this.gameState === 'playing' || this.gameState === 'paused') {
                     e.preventDefault(); this.togglePause();
                 }
@@ -2850,7 +3179,17 @@ class NeonBlocks {
         if (this.dom.vsRestartBtn) {
             this.dom.vsRestartBtn.addEventListener('click', () => {
                 if (this.gameMode === 'online' && this.network) {
-                    this.network.send({ type: 'rematch' });
+                    this.network.sendReliable({ type: 'rematch' });
+                    this._onlineRematchSent = true;
+                    if (this._onlineRematchRequested) {
+                        // Both players want rematch
+                        this.startGame();
+                    } else {
+                        // Waiting for opponent
+                        this.dom.vsRestartBtn.textContent = 'WARTE AUF GEGNER...';
+                        this.dom.vsRestartBtn.disabled = true;
+                    }
+                    return;
                 }
                 this.startGame();
             });
@@ -2862,12 +3201,16 @@ class NeonBlocks {
                 this.dom.startOverlay.classList.remove('hidden');
                 this.gameState = 'start';
                 this.vsBoards = null;
+                this._hideOnlinePauseOverlay();
                 // Clean up network if online
                 if (this.network) {
                     this.network.destroy();
                     this.network = null;
                     this._resetOnlineLobby();
                 }
+                // Hide online HUD elements
+                if (this.dom.vsPing) this.dom.vsPing.style.display = 'none';
+                if (this.dom.vsReconnecting) this.dom.vsReconnecting.style.display = 'none';
                 // Restore canvas size
                 this.calculateCellSize();
                 if (this.dom.statsBar) this.dom.statsBar.style.display = '';
@@ -3323,9 +3666,9 @@ class NeonBlocks {
                 this._updateVsBoard(local, time, dt);
                 this._updateVsHud();
                 this.audio.setDangerLevel(local.getDangerLevel());
-                // Send state to opponent periodically
+                // Send state to opponent periodically (every 3 frames ~50ms for smoother display)
                 this._onlineSyncFrame++;
-                if (this._onlineSyncFrame % 6 === 0) this._onlineSendState();
+                if (this._onlineSyncFrame % 3 === 0) this._onlineSendState();
             } else if (this.gameMode === 'vs' && this.vsBoards) {
                 // VS mode update
                 const [b1, b2] = this.vsBoards;

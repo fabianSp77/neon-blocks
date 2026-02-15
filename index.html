@@ -644,13 +644,34 @@
         .vs-p2 .vs-name { color: #ff00aa; }
         .vs-score { font-size: 13px; color: #ffe600; font-weight: 700; }
         .vs-lines { font-size: 10px; color: rgba(255,255,255,0.5); }
+        .vs-center-info {
+            display: flex; flex-direction: column; align-items: center; gap: 2px;
+        }
         .vs-divider {
             font-size: 16px; font-weight: 900; color: #ff0044;
             text-shadow: 0 0 10px #ff0044;
         }
+        .vs-ping {
+            font-size: 9px; font-weight: 400; letter-spacing: 0.5px;
+            font-family: 'Orbitron', monospace;
+        }
+        .vs-ping.ping-good { color: #00ff6a; }
+        .vs-ping.ping-ok { color: #ffe600; }
+        .vs-ping.ping-bad { color: #ff0044; }
+        .vs-reconnecting {
+            font-size: 9px; color: #ff6a00; font-weight: 700;
+            animation: onlinePulse 1.5s ease-in-out infinite;
+        }
         .vs-attack {
             font-size: 12px; color: #ff6a00; font-weight: 700;
             min-width: 30px; text-align: center;
+        }
+        .vs-pause-overlay {
+            position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.7); z-index: 50;
+            display: flex; align-items: center; justify-content: center;
+            font-family: 'Orbitron', monospace; font-size: 24px; font-weight: 700;
+            color: #ffe600; text-shadow: 0 0 15px rgba(255,230,0,0.6);
         }
 
         #vs-result-overlay h2 { font-size: 28px; margin-bottom: 10px; }
@@ -1270,7 +1291,11 @@
                     <div class="vs-lines" id="vs-p1-lines">0 Lines</div>
                     <div class="vs-attack" id="vs-p1-attack"></div>
                 </div>
-                <div class="vs-divider">VS</div>
+                <div class="vs-center-info">
+                    <div class="vs-divider">VS</div>
+                    <div class="vs-ping" id="vs-ping" style="display:none"></div>
+                    <div class="vs-reconnecting" id="vs-reconnecting" style="display:none">VERBINDE...</div>
+                </div>
                 <div class="vs-player-hud vs-p2">
                     <div class="vs-name" id="vs-p2-name">P2</div>
                     <div class="vs-score" id="vs-p2-score">0</div>
@@ -1284,6 +1309,7 @@
                 <h2 id="vs-winner-text">GEWINNER!</h2>
                 <p id="vs-result-detail"></p>
                 <div class="gameover-stats" id="vs-stats"></div>
+                <div id="vs-rematch-status" style="display:none;color:#00ff6a;font-size:12px;margin:8px 0;"></div>
                 <button class="start-btn" id="vs-restart-btn">NOCHMAL</button>
                 <button class="start-btn" id="vs-menu-btn" style="background:transparent;border:1px solid rgba(255,255,255,0.3);margin-top:8px;font-size:12px;padding:8px 24px;">HAUPTMENUE</button>
             </div>
