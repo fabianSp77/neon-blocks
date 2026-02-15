@@ -39,6 +39,38 @@ const COUNTDOWN_START = 3;
 const MOBILE_BREAKPOINT = 768;
 const MOBILE_PADDING = 16;
 
+// Score animation
+const SCORE_LERP_SPEED = 0.15;   // How fast the displayed score catches up
+
+// Perfect Clear bonus
+const PERFECT_CLEAR_BONUS = 3000;
+
+// Level color themes (hue shifts for background/border glow)
+const LEVEL_THEMES = [
+    { bg: [0, 240, 255],  accent: [0, 240, 255],  name: 'Cyan' },       // Level 1-4
+    { bg: [100, 0, 255],  accent: [176, 0, 255],   name: 'Purple' },     // Level 5-8
+    { bg: [255, 0, 170],  accent: [255, 0, 170],   name: 'Pink' },       // Level 9-12
+    { bg: [255, 68, 0],   accent: [255, 106, 0],   name: 'Orange' },     // Level 13-16
+    { bg: [255, 215, 0],  accent: [255, 230, 0],   name: 'Gold' },       // Level 17-20
+    { bg: [255, 255, 255], accent: [255, 255, 255], name: 'Platinum' },   // Level 21+
+];
+
+// Achievement definitions
+const ACHIEVEMENTS = {
+    firstClear:   { id: 'firstClear',   label: 'FIRST BLOOD',     desc: 'Erste Linie!', icon: '\u{1F525}' },
+    firstTetris:  { id: 'firstTetris',  label: 'TETRIS!',         desc: 'Erster Tetris!', icon: '\u{1F4A5}' },
+    firstTspin:   { id: 'firstTspin',   label: 'T-SPIN MASTER',   desc: 'Erster T-Spin!', icon: '\u{1F300}' },
+    combo5:       { id: 'combo5',       label: '5x COMBO',        desc: '5er Combo!', icon: '\u{26A1}' },
+    combo10:      { id: 'combo10',      label: '10x COMBO',       desc: '10er Combo!', icon: '\u{1F525}\u{1F525}' },
+    level5:       { id: 'level5',       label: 'AUFWAERMEN',      desc: 'Level 5 erreicht!', icon: '\u{2B50}' },
+    level10:      { id: 'level10',      label: 'SPEED DEMON',     desc: 'Level 10 erreicht!', icon: '\u{1F47F}' },
+    level15:      { id: 'level15',      label: 'UNSTOPPABLE',     desc: 'Level 15 erreicht!', icon: '\u{1F451}' },
+    perfectClear: { id: 'perfectClear', label: 'PERFECT CLEAR',   desc: 'Board komplett leer!', icon: '\u{2728}' },
+    backToBack3:  { id: 'backToBack3',  label: 'BACK-TO-BACK x3', desc: '3x Back-to-Back!', icon: '\u{1F4AB}' },
+    score50k:     { id: 'score50k',     label: '50K CLUB',        desc: '50.000 Punkte!', icon: '\u{1F3C6}' },
+    score100k:    { id: 'score100k',    label: '100K LEGEND',     desc: '100.000 Punkte!', icon: '\u{1F48E}' },
+};
+
 const COLORS_NORMAL = {
     I: { fill: '#00f0ff', glow: 'rgba(0,240,255,0.6)', dark: '#006670', pattern: 'lines' },
     O: { fill: '#ffe600', glow: 'rgba(255,230,0,0.6)', dark: '#665c00', pattern: 'dots' },
@@ -288,19 +320,61 @@ class AudioEngine {
                 osc.type = 'sine'; osc.frequency.setValueAtTime(1320, now);
                 gain.gain.setValueAtTime(0.25, now); gain.gain.exponentialRampToValueAtTime(0.001, now + 0.25);
                 osc.start(now); osc.stop(now + 0.25); break;
+            case 'perfectClear': {
+                // Triumphant ascending arpeggio
+                [523, 659, 784, 1047, 1319, 1568].forEach((freq, i) => {
+                    const o = this.audioCtx.createOscillator(); const g = this.audioCtx.createGain();
+                    o.connect(g); g.connect(this.masterGain); o.type = 'sine';
+                    o.frequency.setValueAtTime(freq, now + i * 0.06);
+                    g.gain.setValueAtTime(0.25, now + i * 0.06); g.gain.exponentialRampToValueAtTime(0.001, now + i * 0.06 + 0.3);
+                    o.start(now + i * 0.06); o.stop(now + i * 0.06 + 0.3);
+                }); break;
+            }
+            case 'achievement': {
+                // Short celebratory chime
+                [880, 1100, 1320].forEach((freq, i) => {
+                    const o = this.audioCtx.createOscillator(); const g = this.audioCtx.createGain();
+                    o.connect(g); g.connect(this.masterGain); o.type = 'triangle';
+                    o.frequency.setValueAtTime(freq, now + i * 0.1);
+                    g.gain.setValueAtTime(0.15, now + i * 0.1); g.gain.exponentialRampToValueAtTime(0.001, now + i * 0.1 + 0.2);
+                    o.start(now + i * 0.1); o.stop(now + i * 0.1 + 0.2);
+                }); break;
+            }
+            case 'impact': {
+                // Heavy thud for hard drop
+                osc.type = 'sine'; osc.frequency.setValueAtTime(80, now);
+                osc.frequency.exponentialRampToValueAtTime(30, now + 0.12);
+                gain.gain.setValueAtTime(0.3, now); gain.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
+                osc.start(now); osc.stop(now + 0.12);
+                // White noise burst
+                const noiseOsc = this.audioCtx.createOscillator(); const noiseGain = this.audioCtx.createGain();
+                noiseOsc.connect(noiseGain); noiseGain.connect(this.masterGain);
+                noiseOsc.type = 'sawtooth'; noiseOsc.frequency.setValueAtTime(40, now);
+                noiseGain.gain.setValueAtTime(0.08, now); noiseGain.gain.exponentialRampToValueAtTime(0.001, now + 0.08);
+                noiseOsc.start(now); noiseOsc.stop(now + 0.08); break;
+            }
         }
+    }
+
+    /** Set danger level to adjust music tempo. 0=normal, 1=tense, 2=critical */
+    setDangerLevel(level) {
+        this._dangerLevel = level;
     }
 
     startMusic() {
         if (!this.audioCtx || !this.settings.get('music') || this.musicPlaying) return;
         this.musicPlaying = true;
+        this._dangerLevel = 0;
         this._playMusicLoop();
     }
 
     _playMusicLoop() {
         if (!this.musicPlaying || !this.audioCtx) return;
         const now = this.audioCtx.currentTime;
-        const bpm = 128;
+        // Speed up BPM based on danger level
+        const baseBpm = 128;
+        const dangerBpm = this._dangerLevel === 2 ? 170 : this._dangerLevel === 1 ? 145 : baseBpm;
+        const bpm = dangerBpm;
         const beatLen = 60 / bpm;
 
         // Synthwave bass line
@@ -524,6 +598,22 @@ class NeonBlocks {
         // Dirty flags for UI optimization
         this._prevUI = { score: -1, level: -1, lines: -1, tspins: -1, tetrises: -1, maxCombo: -1 };
 
+        // Score animation
+        this.displayedScore = 0;
+
+        // Hard drop impact flash
+        this.impactFlash = 0;
+        this.impactFlashRows = [];
+
+        // Achievement system
+        this.unlockedAchievements = new Set();
+        this._achievementQueue = [];
+        this._achievementVisible = false;
+        this.backToBackCount = 0;
+
+        // Level theme tracking
+        this._currentThemeIndex = -1;
+
         // Player
         this.playerName = '';
 
@@ -647,6 +737,17 @@ class NeonBlocks {
             // Mode
             modeDesc: document.getElementById('mode-desc'),
         };
+    }
+
+    /** Create the achievement toast container if it doesn't exist. */
+    _ensureAchievementContainer() {
+        if (!this._achievementContainer) {
+            const container = document.createElement('div');
+            container.id = 'achievement-container';
+            container.style.cssText = 'position:fixed;top:20px;left:50%;transform:translateX(-50%);z-index:9999;pointer-events:none;display:flex;flex-direction:column;align-items:center;gap:8px;';
+            document.body.appendChild(container);
+            this._achievementContainer = container;
+        }
     }
 
     /** Load high scores from localStorage, migrating old format if needed. */
@@ -813,10 +914,13 @@ class NeonBlocks {
 
     drawBackground() {
         const ctx = this.bgCtx;
+        const theme = this._getLevelTheme();
+        const [tr, tg, tb] = theme.bg;
+
         ctx.fillStyle = '#0a0a1a';
         ctx.fillRect(0, 0, this.bgCanvas.width, this.bgCanvas.height);
 
-        ctx.strokeStyle = 'rgba(0, 240, 255, 0.03)';
+        ctx.strokeStyle = `rgba(${tr}, ${tg}, ${tb}, 0.03)`;
         ctx.lineWidth = 1;
         for (let x = 0; x < this.bgCanvas.width; x += BG_GRID_SPACING) {
             ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, this.bgCanvas.height); ctx.stroke();
@@ -829,7 +933,7 @@ class NeonBlocks {
             star.y += star.speed;
             if (star.y > this.bgCanvas.height) { star.y = 0; star.x = Math.random() * this.bgCanvas.width; }
             ctx.beginPath();
-            ctx.fillStyle = `rgba(0, 240, 255, ${star.alpha})`;
+            ctx.fillStyle = `rgba(${tr}, ${tg}, ${tb}, ${star.alpha})`;
             ctx.arc(star.x, star.y, star.size, 0, Math.PI * 2);
             ctx.fill();
         });
@@ -1014,7 +1118,24 @@ class NeonBlocks {
         }
 
         this.audio.play('drop');
-        this.haptic(10);
+        this.audio.play('impact');
+        this.haptic(15);
+
+        // Impact flash at landing row
+        this.impactFlash = 8;
+        this.impactFlashRows = [];
+        for (let row = 0; row < p.shape.length; row++) {
+            if (p.shape[row].some(c => c)) {
+                this.impactFlashRows.push(p.y + row - HIDDEN_ROWS);
+            }
+        }
+
+        // Screen shake proportional to drop distance
+        if (cells > 3) {
+            this.screenShake = Math.min(8, cells);
+            this.screenShakeIntensity = Math.min(5, cells * 0.6);
+        }
+
         this.lockPiece();
     }
 
@@ -1093,14 +1214,32 @@ class NeonBlocks {
     }
 
     clearLines(rows) {
+        // Escalating combo: more particles for higher combos
+        const comboMultiplier = Math.min(3, 1 + this.combo * 0.3);
         rows.forEach(row => {
             const firstColor = this.grid[row].find(c => c);
             const color = COLORS[firstColor] || COLORS.I;
-            this.particles.emitLine(row, color.fill);
+            const particleCount = Math.floor(4 * comboMultiplier);
+            const sparkCount = Math.floor(2 * comboMultiplier);
+            for (let col = 0; col < COLS; col++) {
+                this.particles.emit(col * CELL + CELL/2, (row - HIDDEN_ROWS) * CELL + CELL/2, color.fill, particleCount);
+                this.particles.emit(col * CELL + CELL/2, (row - HIDDEN_ROWS) * CELL + CELL/2, '#fff', sparkCount, 'spark');
+            }
         });
         rows.sort((a, b) => a - b);
         for (const row of rows.reverse()) this.grid.splice(row, 1);
         while (this.grid.length < TOTAL_ROWS) this.grid.unshift(Array(COLS).fill(null));
+
+        // Perfect Clear check
+        if (this._isGridEmpty()) {
+            this.score += PERFECT_CLEAR_BONUS * this.level;
+            this.audio.play('perfectClear');
+            this.showScorePopup('PERFECT CLEAR!', '#ffe600');
+            this.screenShake = 15; this.screenShakeIntensity = 8;
+            this.confetti.burst(100);
+            this.haptic(80);
+            this._unlockAchievement('perfectClear');
+        }
     }
 
     /** Calculate and apply score from cleared lines, combos, T-spins, and back-to-back. */
@@ -1139,15 +1278,30 @@ class NeonBlocks {
         }
 
         if ((isTetris || isTspin) && this.backToBack) {
+            this.backToBackCount++;
             points = Math.floor(points * 1.5);
             this.showScorePopup('BACK-TO-BACK!', '#ffe600');
+        } else if (!(isTetris || isTspin)) {
+            this.backToBackCount = 0;
         }
         this.backToBack = isTetris || isTspin;
 
         if (this.combo > 0) {
             points += COMBO_BONUS * this.combo * this.level;
             this.showScorePopup(`${this.combo}x COMBO`, '#ff6a00');
+
+            // Escalating combo intensity: more shake + haptic as combo grows
+            const comboShake = Math.min(10, 3 + this.combo);
+            const comboIntensity = Math.min(6, 2 + this.combo * 0.5);
+            if (comboShake > this.screenShake) {
+                this.screenShake = comboShake;
+                this.screenShakeIntensity = comboIntensity;
+            }
+            this.haptic(Math.min(80, 10 + this.combo * 8));
         }
+
+        // Check achievements
+        this._checkAchievements(numLines, isTetris, isTspin);
 
         points *= this.level;
         this.score += points;
@@ -1169,6 +1323,86 @@ class NeonBlocks {
 
         this.updateUI();
         this.updateComboDisplay();
+    }
+
+    /** Check if the grid is completely empty (Perfect Clear). */
+    _isGridEmpty() {
+        for (let row = 0; row < TOTAL_ROWS; row++) {
+            if (this.grid[row].some(c => c !== null)) return false;
+        }
+        return true;
+    }
+
+    /** Unlock an achievement and show a toast. */
+    _unlockAchievement(id) {
+        if (this.unlockedAchievements.has(id)) return;
+        const achievement = ACHIEVEMENTS[id];
+        if (!achievement) return;
+        this.unlockedAchievements.add(id);
+        this.audio.play('achievement');
+        this._achievementQueue.push(achievement);
+        this._showNextAchievement();
+    }
+
+    _showNextAchievement() {
+        if (this._achievementVisible || this._achievementQueue.length === 0) return;
+        this._achievementVisible = true;
+        this._ensureAchievementContainer();
+
+        const achievement = this._achievementQueue.shift();
+        const toast = document.createElement('div');
+        toast.style.cssText = 'background:linear-gradient(135deg,rgba(0,0,0,0.9),rgba(30,0,60,0.9));border:1px solid rgba(255,230,0,0.6);border-radius:12px;padding:10px 20px;color:#fff;font-family:inherit;font-size:14px;display:flex;align-items:center;gap:10px;box-shadow:0 0 20px rgba(255,230,0,0.3);animation:achievementIn 0.4s ease-out;white-space:nowrap;';
+        toast.innerHTML = '';
+
+        const icon = document.createElement('span');
+        icon.style.fontSize = '24px';
+        icon.textContent = achievement.icon;
+
+        const textDiv = document.createElement('div');
+        const titleEl = document.createElement('div');
+        titleEl.style.cssText = 'font-weight:bold;color:#ffe600;font-size:13px;letter-spacing:1px;';
+        titleEl.textContent = achievement.label;
+        const descEl = document.createElement('div');
+        descEl.style.cssText = 'font-size:11px;color:rgba(255,255,255,0.7);';
+        descEl.textContent = achievement.desc;
+        textDiv.appendChild(titleEl);
+        textDiv.appendChild(descEl);
+
+        toast.appendChild(icon);
+        toast.appendChild(textDiv);
+        this._achievementContainer.appendChild(toast);
+
+        setTimeout(() => {
+            toast.style.transition = 'opacity 0.5s, transform 0.5s';
+            toast.style.opacity = '0';
+            toast.style.transform = 'translateY(-20px)';
+            setTimeout(() => {
+                toast.remove();
+                this._achievementVisible = false;
+                this._showNextAchievement();
+            }, 500);
+        }, 2500);
+    }
+
+    /** Check and trigger achievements based on current game state. */
+    _checkAchievements(numLines, isTetris, isTspin) {
+        if (numLines > 0 && this.lines - numLines === 0) this._unlockAchievement('firstClear');
+        if (isTetris && this.tetrisCount === 1) this._unlockAchievement('firstTetris');
+        if (isTspin && this.tspinCount === 1) this._unlockAchievement('firstTspin');
+        if (this.combo >= 5) this._unlockAchievement('combo5');
+        if (this.combo >= 10) this._unlockAchievement('combo10');
+        if (this.level >= 5) this._unlockAchievement('level5');
+        if (this.level >= 10) this._unlockAchievement('level10');
+        if (this.level >= 15) this._unlockAchievement('level15');
+        if (this.score >= 50000) this._unlockAchievement('score50k');
+        if (this.score >= 100000) this._unlockAchievement('score100k');
+        if (this.backToBackCount >= 3) this._unlockAchievement('backToBack3');
+    }
+
+    /** Get the current level's color theme. */
+    _getLevelTheme() {
+        const index = Math.min(Math.floor((this.level - 1) / 4), LEVEL_THEMES.length - 1);
+        return LEVEL_THEMES[index];
     }
 
     showScorePopup(text, color) {
@@ -1331,6 +1565,14 @@ class NeonBlocks {
         this.screenShake = 0; this.levelUpFlash = 0;
         this.randomizer = new BagRandomizer();
         this.particles = new ParticleSystem();
+        this.displayedScore = 0;
+        this.impactFlash = 0;
+        this.impactFlashRows = [];
+        this.unlockedAchievements = new Set();
+        this._achievementQueue = [];
+        this._achievementVisible = false;
+        this.backToBackCount = 0;
+        this._currentThemeIndex = -1;
 
         // Reset dirty flags so UI updates on first frame
         this._prevUI = { score: -1, level: -1, lines: -1, tspins: -1, tetrises: -1, maxCombo: -1 };
@@ -1549,13 +1791,22 @@ class NeonBlocks {
         if (this.keys['ArrowDown']) this.softDrop();
     }
 
-    /** Update score/level/lines displays, but only when values have actually changed. */
+    /** Update score/level/lines displays with smooth score animation. */
     updateUI() {
         const prev = this._prevUI;
 
-        if (prev.score !== this.score) {
-            prev.score = this.score;
-            const scoreStr = this.score.toLocaleString();
+        // Smooth score counter animation (lerp toward actual score)
+        if (this.displayedScore !== this.score) {
+            const diff = this.score - this.displayedScore;
+            const step = Math.max(1, Math.ceil(Math.abs(diff) * SCORE_LERP_SPEED));
+            this.displayedScore = diff > 0
+                ? Math.min(this.score, this.displayedScore + step)
+                : Math.max(this.score, this.displayedScore - step);
+        }
+
+        if (prev.score !== this.displayedScore) {
+            prev.score = this.displayedScore;
+            const scoreStr = this.displayedScore.toLocaleString();
             this.dom.scoreDisplay.textContent = scoreStr;
             if (this.dom.hudScore) this.dom.hudScore.textContent = scoreStr;
         }
@@ -1885,12 +2136,15 @@ class NeonBlocks {
             }
 
             this.updateModeTimer();
+            // Danger-mode audio: adjust music speed based on stack height
+            this.audio.setDangerLevel(this.getDangerLevel());
             // LIVE UI update every frame
             this.updateUI();
         }
 
         if (this.screenShake > 0) this.screenShake--;
         if (this.levelUpFlash > 0) this.levelUpFlash--;
+        if (this.impactFlash > 0) this.impactFlash--;
         this.particles.update();
         this.confetti.update();
         this.render();
@@ -1915,6 +2169,17 @@ class NeonBlocks {
             ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
         }
 
+        // Hard drop impact flash
+        if (this.impactFlash > 0) {
+            const flashAlpha = (this.impactFlash / 8) * 0.6;
+            this.impactFlashRows.forEach(row => {
+                if (row >= 0 && row < ROWS) {
+                    ctx.fillStyle = `rgba(255,255,255,${flashAlpha})`;
+                    ctx.fillRect(0, row * CELL, COLS * CELL, CELL);
+                }
+            });
+        }
+
         this.drawGrid();
 
         if (this.gameState === 'playing' || this.gameState === 'paused') {
@@ -1924,12 +2189,14 @@ class NeonBlocks {
         ctx.restore();
         this.particles.draw(ctx);
 
-        // Border glow
+        // Border glow - changes color with level theme
         ctx.save();
+        const theme = this._getLevelTheme();
+        const [tr, tg, tb] = theme.accent;
         const borderGrad = ctx.createLinearGradient(0, 0, 0, this.canvas.height);
-        borderGrad.addColorStop(0, 'rgba(0, 240, 255, 0.1)');
-        borderGrad.addColorStop(0.5, 'rgba(176, 0, 255, 0.05)');
-        borderGrad.addColorStop(1, 'rgba(255, 0, 170, 0.1)');
+        borderGrad.addColorStop(0, `rgba(${tr}, ${tg}, ${tb}, 0.15)`);
+        borderGrad.addColorStop(0.5, `rgba(${tr}, ${tg}, ${tb}, 0.05)`);
+        borderGrad.addColorStop(1, `rgba(${tr}, ${tg}, ${tb}, 0.15)`);
         ctx.strokeStyle = borderGrad;
         ctx.lineWidth = 2;
         ctx.strokeRect(0, 0, this.canvas.width, this.canvas.height);
